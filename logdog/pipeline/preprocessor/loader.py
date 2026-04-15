@@ -88,7 +88,7 @@ def _resolve_one(
     # 2. File fallback: templates/preprocessors/<name>.py
     script_path = templates_dir / f"{name}.py"
     if script_path.is_file():
-        return _load_preprocessor_from_file(script_path)
+        return _load_preprocessor_from_file(script_path, config=cfg)
 
     return None
 
@@ -133,7 +133,11 @@ def load_preprocessors(
     return preprocessors
 
 
-def _load_preprocessor_from_file(module_path: Path) -> BasePreprocessor | None:
+def _load_preprocessor_from_file(
+    module_path: Path,
+    *,
+    config: dict[str, Any] | None = None,
+) -> BasePreprocessor | None:
     spec = importlib.util.spec_from_file_location(
         f"logdog_user_preprocessor_{module_path.stem}", module_path
     )
@@ -149,7 +153,7 @@ def _load_preprocessor_from_file(module_path: Path) -> BasePreprocessor | None:
         )
         return None
     candidate = getattr(module, "PREPROCESSOR", None)
-    preprocessor = _coerce_preprocessor(candidate)
+    preprocessor = _coerce_preprocessor(candidate, config=config)
     if preprocessor is None:
         logger.warning("Skipping invalid preprocessor module: %s", module_path.name)
         return None
@@ -162,11 +166,18 @@ def _load_preprocessor_from_file(module_path: Path) -> BasePreprocessor | None:
         return None
 
 
-def _coerce_preprocessor(candidate: object) -> BasePreprocessor | None:
+def _coerce_preprocessor(
+    candidate: object,
+    *,
+    config: dict[str, Any] | None = None,
+) -> BasePreprocessor | None:
     if isinstance(candidate, BasePreprocessor):
         return candidate
     if isinstance(candidate, type) and issubclass(candidate, BasePreprocessor):
-        return cast(BasePreprocessor, candidate())
+        try:
+            return cast(BasePreprocessor, candidate(config=config))
+        except TypeError:
+            return cast(BasePreprocessor, candidate())
     return None
 
 
