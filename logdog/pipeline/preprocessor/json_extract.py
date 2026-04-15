@@ -47,7 +47,7 @@ class JsonExtractPreprocessor(BasePreprocessor):
             parts = [
                 f"{f}={parsed[f]}"
                 for f in self._fields
-                if f in parsed and str(parsed[f]).strip()
+                if f in parsed and parsed[f] is not None
             ]
             json_level = str(parsed.get("level") or "").strip().lower() or None
             result.append(LogLine(
@@ -56,7 +56,7 @@ class JsonExtractPreprocessor(BasePreprocessor):
                 container_name=line.container_name,
                 timestamp=line.timestamp,
                 content=" ".join(parts) if parts else line.content,
-                level=line.level if line.level else json_level,
+                level=line.level if line.level is not None else json_level,
                 metadata={**(line.metadata or {}), "json_parsed": True},
             ))
         return result

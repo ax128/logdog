@@ -66,6 +66,15 @@ def test_json_extract_custom_fields():
     content = result[0].content
     assert "req_id=abc" in content
     assert "status=500" in content
+    assert "path=/api" in content
+    assert "level=" not in content
+
+
+def test_json_extract_zero_value_field_included():
+    # Integer 0 is a valid field value and must not be filtered out
+    line = _line(_j({"status": 0, "message": "ok"}))
+    content = JsonExtractPreprocessor(config={"fields": ["status", "message"]}).process([line])[0].content
+    assert "status=0" in content
 
 
 def test_json_extract_marks_metadata():
