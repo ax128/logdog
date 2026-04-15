@@ -34,16 +34,25 @@ def test_dedup_run_longer_than_threshold_collapsed():
     result = DedupPreprocessor().process(lines)
     assert len(result) == 2
     assert result[0].content == "x"
-    assert "9" in result[1].content
+    assert result[1].content == "[上条日志重复 ×9 次，已折叠]"
     assert result[1].metadata is not None
     assert result[1].metadata.get("deduped") is True
+    assert result[1].metadata.get("original_count") == 10
 
 
 def test_dedup_custom_max_consecutive():
     lines = [_line("y")] * 5
     result = DedupPreprocessor(config={"max_consecutive": 2}).process(lines)
     assert len(result) == 2
-    assert "3" in result[1].content
+    assert result[1].content == "[上条日志重复 ×4 次，已折叠]"
+
+
+def test_dedup_invalid_config_clamped_to_one():
+    # max_consecutive=0 should behave as 1 (clamp)
+    lines = [_line("z")] * 3
+    result = DedupPreprocessor(config={"max_consecutive": 0}).process(lines)
+    assert len(result) == 2
+    assert result[1].content == "[上条日志重复 ×2 次，已折叠]"
 
 
 def test_dedup_non_consecutive_repeats_not_collapsed():

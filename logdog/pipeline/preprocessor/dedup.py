@@ -14,12 +14,11 @@ class DedupPreprocessor(BasePreprocessor):
 
     def __init__(self, config: dict | None = None) -> None:
         cfg = config or {}
-        self._max_consecutive = int(cfg.get("max_consecutive", 3))
-        self._max_from_config = "max_consecutive" in cfg
+        self._max_consecutive = max(1, int(cfg.get("max_consecutive", 3)))
 
     def process(self, lines: list[LogLine]) -> list[LogLine]:
         if not lines:
-            return lines
+            return []
         result: list[LogLine] = []
         i = 0
         while i < len(lines):
@@ -32,10 +31,7 @@ class DedupPreprocessor(BasePreprocessor):
                 result.extend(lines[i:j])
             else:
                 result.append(anchor)
-                if self._max_from_config:
-                    collapsed = run_len - self._max_consecutive
-                else:
-                    collapsed = run_len - 1
+                collapsed = run_len - 1
                 result.append(LogLine(
                     host_name=anchor.host_name,
                     container_id=anchor.container_id,
