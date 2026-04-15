@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import hashlib
 import inspect
 import importlib
 import json
@@ -887,7 +889,11 @@ def create_app(
         telegram_application_factory=telegram_application_factory,
         telegram_handler_binder=telegram_handler_binder,
     )
-    _wire_telegram_chat_id_sync(app.state.telegram_runtime, resolved_notify_router)
+    _wire_telegram_chat_id_sync(
+        app.state.telegram_runtime,
+        resolved_notify_router,
+        bot_token=_resolve_telegram_bot_token(current_app_config),
+    )
     app.state.schedule_report_runner = schedule_report_runner
     app.state.storm_controller = storm_controller
     app.state.app_config = current_app_config
@@ -1020,7 +1026,9 @@ def create_app(
                 telegram_handler_binder=telegram_handler_binder,
             )
             _wire_telegram_chat_id_sync(
-                candidate_telegram_runtime, resolved_notify_router
+                candidate_telegram_runtime,
+                resolved_notify_router,
+                bot_token=_resolve_telegram_bot_token(new_app_config),
             )
 
             candidate_report_scheduler = build_report_scheduler_for_config(
@@ -2503,6 +2511,85 @@ def _resolve_authorized_telegram_users(
 
 
 _AUTHORIZED_USERS_STATE_FILE = "data/logdog_authorized.json"
+_CHAT_ID_CACHE_FILE = "data/logdog_chat_id.json"
+
+
+# ---------------------------------------------------------------------------
+# Chat-id cache helpers (per bot-token, XOR-encrypted, stored as base64 JSON)
+# ---------------------------------------------------------------------------
+
+def _chat_id_token_key(bot_token: str) -> tuple[str, bytes]:
+    """Return (fingerprint, xor_key) derived from the bot token.
+
+    fingerprint — first 16 hex chars of SHA-256(token); used as JSON key.
+    xor_key     — 32-byte SHA-256 of 'logdog-chatid:<token>'; used to
+                  obfuscate the chat_id so it's not stored in plaintext.
+    """
+    token_bytes = bot_token.encode()
+    fingerprint = hashlib.sha256(token_bytes).hexdigest()[:16]
+    xor_key = hashlib.sha256(b"logdog-chatid:" + token_bytes).digest()
+    return fingerprint, xor_key
+
+
+def _xor_encrypt(data: bytes, key: bytes) -> bytes:
+    key_len = len(key)
+    return bytes(b ^ key[i % key_len] for i, b in enumerate(data))
+
+
+def _load_cached_chat_id(bot_token: str) -> str | None:
+    """Return the cached chat_id for this token, or None if missing/corrupt."""
+    try:
+        path = Path(_CHAT_ID_CACHE_FILE)
+        if not path.exists():
+            return None
+        data = json.loads(path.read_text())
+        fingerprint, xor_key = _chat_id_token_key(bot_token)
+        encoded = data.get(fingerprint)
+        if not encoded:
+            return None
+        chat_id = _xor_encrypt(base64.b64decode(encoded), xor_key).decode("utf-8").strip()
+        if chat_id:
+            logger.debug("loaded cached telegram chat_id (token fingerprint: %s)", fingerprint)
+            return chat_id
+    except Exception:  # noqa: BLE001
+        logger.debug(
+            "failed to load cached telegram chat_id — will wait for first message",
+            exc_info=True,
+        )
+    return None
+
+
+def _persist_chat_id(bot_token: str, chat_id: str) -> None:
+    """Encrypt and persist chat_id keyed by token fingerprint (atomic write)."""
+    import tempfile
+
+    try:
+        path = Path(_CHAT_ID_CACHE_FILE)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        existing: dict[str, str] = {}
+        if path.exists():
+            try:
+                existing = json.loads(path.read_text())
+            except Exception:  # noqa: BLE001
+                existing = {}
+        fingerprint, xor_key = _chat_id_token_key(bot_token)
+        encrypted = _xor_encrypt(chat_id.encode("utf-8"), xor_key)
+        existing[fingerprint] = base64.b64encode(encrypted).decode()
+        content = json.dumps(existing, indent=2)
+        fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w") as f:
+                f.write(content)
+            os.replace(tmp, path)
+        except Exception:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+        logger.debug("cached telegram chat_id to %s (fingerprint: %s)", path, fingerprint)
+    except Exception:  # noqa: BLE001
+        logger.warning("failed to cache telegram chat_id", exc_info=True)
 
 
 def _load_persisted_authorized_users() -> set[str]:
@@ -2573,14 +2660,37 @@ def _collect_pin_chat_id_funcs(notify_router: Any) -> list[Callable[[str], None]
     return funcs
 
 
-def _wire_telegram_chat_id_sync(runtime: Any, notify_router: Any) -> None:
+def _wire_telegram_chat_id_sync(
+    runtime: Any, notify_router: Any, *, bot_token: str = ""
+) -> None:
     """Register a callback on the bot runtime that pins the observed chat_id
-    to all telegram notify senders, bypassing getUpdates/polling conflict."""
+    to all telegram notify senders, bypassing getUpdates/polling conflict.
+
+    If bot_token is provided, also loads any cached chat_id from a previous
+    run and pre-pins it immediately (so push notifications work before the
+    user sends the bot a message), and persists new chat_ids to the cache.
+    """
     if runtime is None:
         return
     pin_funcs = _collect_pin_chat_id_funcs(notify_router)
     if not pin_funcs:
         return
+
+    # Pre-pin cached chat_id from a previous run so push notifications work
+    # right away without waiting for the user to send a message.
+    if bot_token:
+        cached = _load_cached_chat_id(bot_token)
+        if cached:
+            logger.info(
+                "telegram: pre-pinning cached chat_id from previous run "
+                "(token: ...%s)",
+                bot_token[-4:],
+            )
+            for fn in pin_funcs:
+                try:
+                    fn(cached)
+                except Exception:  # noqa: BLE001
+                    logger.warning("pre-pin chat_id failed", exc_info=True)
 
     def _on_chat_id_seen(chat_id: str) -> None:
         for fn in pin_funcs:
@@ -2588,6 +2698,8 @@ def _wire_telegram_chat_id_sync(runtime: Any, notify_router: Any) -> None:
                 fn(chat_id)
             except Exception:  # noqa: BLE001
                 logger.warning("pin_chat_id failed for a notify sender", exc_info=True)
+        if bot_token:
+            _persist_chat_id(bot_token, chat_id)
 
     if callable(getattr(runtime, "set_chat_id_seen_callback", None)):
         runtime.set_chat_id_seen_callback(_on_chat_id_seen)
