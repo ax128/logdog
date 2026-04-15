@@ -213,10 +213,56 @@ notify:
     #       channels: ["prod-wecom"]
 
 
-# ── LLM / Agent ──────────────────────────────────────────
+# =====================================================================
+# LLM 配置
+#
+# LogWatch 使用 LLM 对日志告警进行智能分析（摘要、根因推断等）。
+# 关闭 enabled 后退回纯文本模式，不调用任何 LLM。
+#
+# ── model 格式 ──
+#   "provider:model-name"
+#   provider 由 OPENAI_BASE_URL 决定实际后端，支持任何 OpenAI 兼容 API。
+#
+# ── 环境变量 (.env) ──
+#   OPENAI_API_KEY    - API 密钥
+#   OPENAI_BASE_URL   - API 地址（可指向自建/第三方兼容端点）
+#
+# ── 多供应商示例 ──
+#   通过不同的 OPENAI_BASE_URL + OPENAI_API_KEY 切换供应商：
+#
+#   官方 OpenAI:
+#     OPENAI_BASE_URL=https://api.openai.com/v1
+#     OPENAI_API_KEY=sk-xxx
+#     model: "openai:gpt-4o"
+#
+#   Azure OpenAI:
+#     OPENAI_BASE_URL=https://your-resource.openai.azure.com/openai/deployments/gpt-4o
+#     OPENAI_API_KEY=your-azure-key
+#     model: "openai:gpt-4o"
+#
+#   自建/代理 (agentop, one-api, new-api 等):
+#     OPENAI_BASE_URL=https://api.agentop.dev/v1/__gw__/t/8317
+#     OPENAI_API_KEY=your-key
+#     model: "openai:gpt-5.4"
+#
+#   Anthropic (通过 OpenAI 兼容代理):
+#     OPENAI_BASE_URL=https://your-proxy/v1
+#     model: "openai:claude-sonnet-4-6"
+#
+# ── 容器级覆盖 ──
+#   不同容器可使用不同模型（在 hosts[].containers.overrides 中配置）：
+#     api 容器 → 高质量模型 (gpt-4o)    ← 核心业务日志需要精准分析
+#     worker   → 低成本模型 (gpt-4o-mini) ← 后台任务日志量大但不关键
+#     redis    → 关闭 LLM (enabled: false) ← 规则匹配即可，不需要 LLM
+#
+#   详见下方 hosts 段的 containers.overrides.llm 示例。
+# =====================================================================
 llm:
   enabled: true
-  # model: "openai:${LLM_MODEL}"
+  model: "openai:${LLM_MODEL}"
+  # model: "openai:gpt-4o"
+  # model: "openai:gpt-4o-mini"
+  # model: "openai:gpt-5.4"
 
 agent:
   authorized_users:
