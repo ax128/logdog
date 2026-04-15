@@ -4,9 +4,12 @@ import json
 import importlib
 import inspect
 import logging
+import mimetypes
 import ssl
 import time
+import uuid
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -24,10 +27,45 @@ SendFunc = Callable[[str, str], Awaitable[None]]
 logger = logging.getLogger(__name__)
 TELEGRAM_AUTO_TARGET = "__auto__"
 _AUTO_TARGET_ATTR = "_logwatch_supports_auto_target"
+_STREAM_EDIT_MIN_INTERVAL_SEC = 0.35
+
+
+def telegram_markdown_retryable(error: BaseException | None) -> bool:
+    """Return True if the error is a Telegram markdown parse failure that can be retried as plain text."""
+    text = str(error or "").lower()
+    return "can't parse entities" in text or "can't find end of the entity" in text
+
+
+def telegram_markdown_unsafe(text: str) -> bool:
+    """Detect text that will likely fail Telegram legacy Markdown parsing.
+    Rule: outside code spans, an unescaped '_' with alphanumeric neighbors on both sides is unsafe.
+    """
+    value = str(text or "")
+    if "_" not in value:
+        return False
+    in_code = False
+    for idx, ch in enumerate(value):
+        prev = value[idx - 1] if idx > 0 else ""
+        escaped = prev == "\\"
+        if ch == "`" and not escaped:
+            in_code = not in_code
+            continue
+        if in_code:
+            continue
+        if ch != "_" or escaped:
+            continue
+        left = value[idx - 1] if idx > 0 else ""
+        right = value[idx + 1] if idx + 1 < len(value) else ""
+        if left.isalnum() and right.isalnum():
+            return True
+    return False
 
 
 class TelegramBotTokenSender:
     """Minimal Telegram Bot API sender for notify path."""
+
+    _DEFAULT_MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024
+    _DOWNLOAD_CHUNK_BYTES = 64 * 1024
 
     def __init__(
         self,
@@ -49,17 +87,109 @@ class TelegramBotTokenSender:
         self._cached_chat_id: str | None = None
         self._cached_at_ts = 0.0
 
-    def send(self, target: str, message: str) -> None:
+    def send(self, target: str, message: str, parse_mode: str = "") -> None:
         chat_id = str(target or "").strip()
         if chat_id == "" or chat_id == TELEGRAM_AUTO_TARGET:
             chat_id = self._resolve_auto_chat_id()
-        self._request(
-            "sendMessage",
-            {
-                "chat_id": chat_id,
-                "text": str(message),
-            },
+        self.send_message(chat_id, str(message), parse_mode=parse_mode)
+
+    def send_message(
+        self, chat_id: str, text: str, parse_mode: str = ""
+    ) -> Any:
+        effective_parse_mode = str(parse_mode or "").strip()
+        if effective_parse_mode == "Markdown" and telegram_markdown_unsafe(text):
+            effective_parse_mode = ""
+        payload: dict[str, Any] = {"chat_id": chat_id, "text": str(text)}
+        if effective_parse_mode:
+            payload["parse_mode"] = effective_parse_mode
+        try:
+            return self._request("sendMessage", payload)
+        except Exception as exc:
+            if effective_parse_mode == "Markdown" and telegram_markdown_retryable(exc):
+                payload.pop("parse_mode", None)
+                return self._request("sendMessage", payload)
+            raise
+
+    def edit_message_text(
+        self, chat_id: str, message_id: int, text: str, parse_mode: str = ""
+    ) -> Any:
+        effective_parse_mode = str(parse_mode or "").strip()
+        truncated = str(text)[:4096]
+        if effective_parse_mode == "Markdown" and telegram_markdown_unsafe(truncated):
+            effective_parse_mode = ""
+        payload: dict[str, Any] = {
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "text": truncated,
+        }
+        if effective_parse_mode:
+            payload["parse_mode"] = effective_parse_mode
+        try:
+            return self._request("editMessageText", payload)
+        except Exception as exc:
+            if effective_parse_mode == "Markdown" and telegram_markdown_retryable(exc):
+                payload.pop("parse_mode", None)
+                return self._request("editMessageText", payload)
+            raise
+
+    def send_chat_action(self, chat_id: str, action: str = "typing") -> Any:
+        return self._request("sendChatAction", {"chat_id": chat_id, "action": action})
+
+    def set_my_commands(self, commands: list[dict[str, str]]) -> Any:
+        return self._request("setMyCommands", {"commands": commands})
+
+    def delete_webhook(self) -> Any:
+        return self._request("deleteWebhook", {})
+
+    def send_document(
+        self, chat_id: str, file_path: str | Path, caption: str = ""
+    ) -> Any:
+        truncated_caption = str(caption or "")[:1024]
+        payload: dict[str, str] = {"chat_id": str(chat_id)}
+        if truncated_caption:
+            payload["caption"] = truncated_caption
+        return self._request_multipart(
+            "sendDocument", payload, files={"document": str(file_path)}
         )
+
+    def download_file(
+        self,
+        file_id: str,
+        target_path: str | Path,
+        *,
+        max_bytes: int = 0,
+    ) -> Path:
+        effective_max = max_bytes if max_bytes > 0 else self._DEFAULT_MAX_DOWNLOAD_BYTES
+        result = self._request("getFile", {"file_id": file_id})
+        if not isinstance(result, dict) or "file_path" not in result:
+            raise RuntimeError("telegram getFile did not return file_path")
+        remote_path = result["file_path"]
+        url = f"https://api.telegram.org/file/bot{self._bot_token}/{remote_path}"
+        dest = Path(target_path)
+        req = Request(url, method="GET")
+        downloaded = 0
+        try:
+            with urlopen(
+                req,
+                timeout=self._timeout_seconds,
+                context=ssl.create_default_context(),
+            ) as resp:
+                with dest.open("wb") as fh:
+                    while True:
+                        chunk = resp.read(self._DOWNLOAD_CHUNK_BYTES)
+                        if not chunk:
+                            break
+                        downloaded += len(chunk)
+                        if downloaded > effective_max:
+                            raise RuntimeError(
+                                f"download exceeds max size {effective_max} bytes"
+                            )
+                        fh.write(chunk)
+        except Exception:
+            if dest.exists():
+                dest.unlink(missing_ok=True)
+            raise
+        return dest
 
     def _resolve_auto_chat_id(self) -> str:
         now = time.monotonic()
@@ -102,6 +232,64 @@ class TelegramBotTokenSender:
                 return chat_id
         return None
 
+    def _request_multipart(
+        self,
+        method: str,
+        payload: dict[str, str],
+        *,
+        files: dict[str, str],
+    ) -> Any:
+        boundary = uuid.uuid4().hex
+        body = b""
+        for key, value in payload.items():
+            body += f"--{boundary}\r\n".encode()
+            body += f'Content-Disposition: form-data; name="{key}"\r\n\r\n'.encode()
+            body += f"{value}\r\n".encode()
+        for field_name, file_path_str in files.items():
+            p = Path(file_path_str)
+            mime_type = mimetypes.guess_type(p.name)[0] or "application/octet-stream"
+            body += f"--{boundary}\r\n".encode()
+            body += (
+                f'Content-Disposition: form-data; name="{field_name}"; '
+                f'filename="{p.name}"\r\n'
+            ).encode()
+            body += f"Content-Type: {mime_type}\r\n\r\n".encode()
+            body += p.read_bytes()
+            body += b"\r\n"
+        body += f"--{boundary}--\r\n".encode()
+
+        base_url = f"https://api.telegram.org/bot{self._bot_token}/{method}"
+        headers = {"Content-Type": f"multipart/form-data; boundary={boundary}"}
+        req = Request(base_url, data=body, method="POST", headers=headers)
+
+        try:
+            with urlopen(
+                req,
+                timeout=self._timeout_seconds,
+                context=ssl.create_default_context(),
+            ) as resp:
+                raw = resp.read().decode("utf-8", errors="replace")
+        except HTTPError as exc:
+            detail = str(exc)
+            try:
+                detail_payload = json.loads(exc.read().decode("utf-8", errors="replace"))
+                detail = str(detail_payload.get("description") or detail_payload)
+            except Exception:  # noqa: BLE001
+                pass
+            raise RuntimeError(detail) from exc
+        except URLError as exc:
+            raise RuntimeError(str(getattr(exc, "reason", exc))) from exc
+
+        try:
+            decoded = json.loads(raw)
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError("telegram response is not valid json") from exc
+        if not isinstance(decoded, dict):
+            raise RuntimeError("telegram response is not an object")
+        if not bool(decoded.get("ok")):
+            raise RuntimeError(str(decoded.get("description") or decoded))
+        return decoded.get("result")
+
     def _request(self, method: str, payload: dict[str, Any] | None = None) -> Any:
         base_url = f"https://api.telegram.org/bot{self._bot_token}/{method}"
         request_payload = payload if isinstance(payload, dict) else {}
@@ -139,6 +327,71 @@ class TelegramBotTokenSender:
         if not bool(decoded.get("ok")):
             raise RuntimeError(str(decoded.get("description") or decoded))
         return decoded.get("result")
+
+
+class TelegramStreamSender:
+    """Streams long-running text to a single Telegram message, editing in place."""
+
+    def __init__(self, bot: TelegramBotTokenSender, chat_id: str) -> None:
+        self._bot = bot
+        self._chat_id = str(chat_id or "").strip()
+        self._message_id: int | None = None
+        self._last_edit = 0.0
+
+    def update(self, full_text: str) -> None:
+        if not self._chat_id:
+            return
+        truncated = str(full_text)[:4096]
+        if self._message_id is None:
+            result = self._bot.send_message(self._chat_id, truncated, parse_mode="")
+            if isinstance(result, dict):
+                self._message_id = result.get("message_id")
+            self._last_edit = time.monotonic()
+            return
+        now = time.monotonic()
+        if (now - self._last_edit) < _STREAM_EDIT_MIN_INTERVAL_SEC:
+            return
+        try:
+            self._bot.edit_message_text(
+                self._chat_id, self._message_id, truncated, parse_mode=""
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning("telegram stream edit failed", exc_info=True)
+        self._last_edit = time.monotonic()
+
+    def finalize(self, full_text: str, *, fmt: str = "plain") -> None:
+        if not self._chat_id:
+            return
+        truncated = str(full_text)[:4096]
+        parse_mode = "Markdown" if fmt == "markdown" else ""
+
+        if self._message_id is None:
+            try:
+                self._bot.send_message(self._chat_id, truncated, parse_mode=parse_mode)
+            except Exception as exc:
+                if parse_mode == "Markdown" and telegram_markdown_retryable(exc):
+                    try:
+                        self._bot.send_message(self._chat_id, truncated, parse_mode="")
+                    except Exception:  # noqa: BLE001
+                        logger.warning("telegram stream finalize fallback failed", exc_info=True)
+                else:
+                    logger.warning("telegram stream finalize send failed", exc_info=True)
+            return
+
+        try:
+            self._bot.edit_message_text(
+                self._chat_id, self._message_id, truncated, parse_mode=parse_mode
+            )
+        except Exception as exc:
+            if parse_mode == "Markdown" and telegram_markdown_retryable(exc):
+                try:
+                    self._bot.edit_message_text(
+                        self._chat_id, self._message_id, truncated, parse_mode=""
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.warning("telegram stream finalize edit fallback failed", exc_info=True)
+            else:
+                logger.warning("telegram stream finalize edit failed", exc_info=True)
 
 
 def build_telegram_bot_token_sender(
