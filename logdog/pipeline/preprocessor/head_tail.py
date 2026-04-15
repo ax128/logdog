@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+import logging
+
 from logdog.pipeline.preprocessor.base import BasePreprocessor, LogLine
+
+
+logger = logging.getLogger(__name__)
 
 
 class HeadTailPreprocessor(BasePreprocessor):
@@ -17,13 +22,19 @@ class HeadTailPreprocessor(BasePreprocessor):
 
     def __init__(self, config: dict | None = None) -> None:
         cfg = config or {}
-        self._head = max(1, int(cfg.get("head", 20)))
-        self._tail = max(1, int(cfg.get("tail", 20)))
+        head_raw = int(cfg.get("head", 20))
+        tail_raw = int(cfg.get("tail", 20))
+        if head_raw < 1:
+            logger.warning("head_tail: 'head' value %d clamped to 1", head_raw)
+        if tail_raw < 1:
+            logger.warning("head_tail: 'tail' value %d clamped to 1", tail_raw)
+        self._head = max(1, head_raw)
+        self._tail = max(1, tail_raw)
 
     def process(self, lines: list[LogLine]) -> list[LogLine]:
         threshold = self._head + self._tail
         if len(lines) <= threshold:
-            return lines
+            return list(lines)
         head_lines = lines[: self._head]
         tail_lines = lines[-self._tail :]
         dropped = len(lines) - threshold

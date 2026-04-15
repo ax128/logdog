@@ -63,3 +63,5 @@ def test_head_tail_marker_inherits_container_info():
     marker = result[5]
     assert marker.host_name == "h"
     assert marker.container_name == "app"
+    assert marker.container_id == "c"
+    assert marker.timestamp == "2026-04-15T10:00:00Z"
