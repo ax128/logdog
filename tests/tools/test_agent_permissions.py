@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from logwatch.llm.permissions import ensure_tool_allowed, load_permission_policy
+from logdog.llm.permissions import ensure_tool_allowed, load_permission_policy
 
 
 def test_restart_container_requires_allowlisted_host() -> None:

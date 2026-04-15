@@ -2,7 +2,7 @@ import asyncio
 
 import httpx
 
-from logwatch.web.api import create_api_app
+from logdog.web.api import create_api_app
 
 
 def test_reload_requires_admin_token_user_forbidden() -> None:

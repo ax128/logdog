@@ -3,8 +3,8 @@ import sqlite3
 
 import httpx
 
-from logwatch.main import create_app
-from logwatch.web.api import create_api_app
+from logdog.main import create_app
+from logdog.web.api import create_api_app
 
 
 class _SyncCursor:

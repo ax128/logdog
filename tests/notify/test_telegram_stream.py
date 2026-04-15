@@ -5,7 +5,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from logwatch.notify.telegram import TelegramStreamSender, _STREAM_EDIT_MIN_INTERVAL_SEC
+from logdog.notify.telegram import TelegramStreamSender, _STREAM_EDIT_MIN_INTERVAL_SEC
 
 
 def _make_bot_mock() -> MagicMock:

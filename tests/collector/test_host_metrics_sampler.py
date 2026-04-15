@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from logwatch.collector.host_metrics_sampler import HostMetricsSampler
+from logdog.collector.host_metrics_sampler import HostMetricsSampler
 
 
 class _HostManagerStub:

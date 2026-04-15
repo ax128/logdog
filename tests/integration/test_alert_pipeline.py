@@ -4,15 +4,15 @@ from collections.abc import AsyncIterator
 import pytest
 import pytest_asyncio
 
-from logwatch.collector.log_stream import (
+from logdog.collector.log_stream import (
     run_alert_once,
     reset_alert_runtime_state_for_tests,
 )
-from logwatch.pipeline.cooldown import CooldownStore
+from logdog.pipeline.cooldown import CooldownStore
 
 
 def _alert_storm_controller_cls():
-    module = importlib.import_module("logwatch.collector.storm")
+    module = importlib.import_module("logdog.collector.storm")
     return module.AlertStormController
 
 
@@ -183,7 +183,7 @@ async def test_alert_pipeline_sends_dedup_summary_after_window(monkeypatch) -> N
         clock["t"] += 0.01
         return current
 
-    monkeypatch.setattr("logwatch.collector.log_stream.time.time", fake_time)
+    monkeypatch.setattr("logdog.collector.log_stream.time.time", fake_time)
 
     async def fake_notify(host: str, message: str, category: str) -> bool:
         pushed_records.append((host, message, category))

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from logwatch.notify.telegram import telegram_markdown_retryable, telegram_markdown_unsafe
+from logdog.notify.telegram import telegram_markdown_retryable, telegram_markdown_unsafe
 
 
 class TestTelegramMarkdownUnsafe:

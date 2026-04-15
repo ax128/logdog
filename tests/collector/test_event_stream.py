@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 
-from logwatch.collector.event_stream import EventStreamWatcher
+from logdog.collector.event_stream import EventStreamWatcher
 
 
 @pytest.mark.asyncio

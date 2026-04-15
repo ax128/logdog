@@ -4,7 +4,7 @@ import time
 from typing import Any
 from unittest.mock import MagicMock
 
-from logwatch.llm.agent_runtime import (
+from logdog.llm.agent_runtime import (
     DEFAULT_CHAT_FALLBACK_MESSAGE,
     _BoundedCheckpointer,
     build_chat_runtime,
@@ -116,7 +116,7 @@ def test_chat_runtime_returns_bounded_fallback_when_agent_raises() -> None:
 
 def test_wrap_registered_tool_uses_lc_tool_with_schema() -> None:
     """Verify wrapping produces a LangChain tool with args_schema from TOOL_META."""
-    from logwatch.llm.agent_runtime import _wrap_registered_tool
+    from logdog.llm.agent_runtime import _wrap_registered_tool
 
     class _FakeTool:
         name = "list_containers"

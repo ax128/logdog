@@ -4,7 +4,7 @@ from typing import Any
 
 import pytest
 
-from logwatch.collector.host_metrics_probe import (
+from logdog.collector.host_metrics_probe import (
     HOST_METRICS_REMOTE_COMMAND,
     HostMetricsProbeAuthError,
     HostMetricsProbeParseError,
@@ -79,23 +79,23 @@ class _SshClientStub:
 
 def test_collect_local_host_metrics_supports_feature_flags(monkeypatch) -> None:
     monkeypatch.setattr(
-        "logwatch.collector.host_metrics_probe._utc_now_iso",
+        "logdog.collector.host_metrics_probe._utc_now_iso",
         lambda: "2026-04-12T10:30:00+00:00",
     )
     monkeypatch.setattr(
-        "logwatch.collector.host_metrics_probe._read_cpu_percent",
+        "logdog.collector.host_metrics_probe._read_cpu_percent",
         lambda: 12.5,
     )
     monkeypatch.setattr(
-        "logwatch.collector.host_metrics_probe._read_load_averages",
+        "logdog.collector.host_metrics_probe._read_load_averages",
         lambda: (1.0, 2.0, 3.0),
     )
     monkeypatch.setattr(
-        "logwatch.collector.host_metrics_probe._read_memory_info",
+        "logdog.collector.host_metrics_probe._read_memory_info",
         lambda: {"mem_total": 1000, "mem_used": 600, "mem_available": 400},
     )
     monkeypatch.setattr(
-        "logwatch.collector.host_metrics_probe._read_disk_usage",
+        "logdog.collector.host_metrics_probe._read_disk_usage",
         lambda: {
             "disk_root_total": 2000,
             "disk_root_used": 800,
@@ -103,7 +103,7 @@ def test_collect_local_host_metrics_supports_feature_flags(monkeypatch) -> None:
         },
     )
     monkeypatch.setattr(
-        "logwatch.collector.host_metrics_probe._read_network_totals",
+        "logdog.collector.host_metrics_probe._read_network_totals",
         lambda: {"net_rx": 111, "net_tx": 222},
     )
 
@@ -145,7 +145,7 @@ async def test_collect_host_metrics_for_host_routes_unix_url_to_local(
         }
 
     monkeypatch.setattr(
-        "logwatch.collector.host_metrics_probe.collect_local_host_metrics",
+        "logdog.collector.host_metrics_probe.collect_local_host_metrics",
         fake_local,
     )
 
@@ -187,7 +187,7 @@ async def test_collect_remote_host_metrics_runs_sync_probe_in_worker_thread(
         }
 
     monkeypatch.setattr(
-        "logwatch.collector.host_metrics_probe.asyncio.to_thread",
+        "logdog.collector.host_metrics_probe.asyncio.to_thread",
         fake_to_thread,
     )
 

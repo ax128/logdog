@@ -4,7 +4,7 @@ from collections.abc import Awaitable, Callable
 
 import pytest
 
-from logwatch.notify.telegram import build_telegram_bot_runtime, TELEGRAM_BOT_COMMANDS
+from logdog.notify.telegram import build_telegram_bot_runtime, TELEGRAM_BOT_COMMANDS
 
 
 class _FakeUpdater:

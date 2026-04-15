@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from logwatch.collector.scheduler import (
+from logdog.collector.scheduler import (
     HostMetricsSamplingScheduler,
     MetricsSamplingScheduler,
     ReportScheduler,

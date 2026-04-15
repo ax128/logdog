@@ -1,7 +1,7 @@
 import httpx
 import pytest
 
-from logwatch.main import create_app
+from logdog.main import create_app
 
 
 @pytest.mark.asyncio
@@ -22,7 +22,7 @@ async def test_main_app_serves_static_frontend_entrypoint() -> None:
 
     assert entrypoint.status_code == 200
     assert entrypoint.headers["content-type"].startswith("text/html")
-    assert "LogWatch" in entrypoint.text
+    assert "LogDog" in entrypoint.text
     assert "host-overview" in entrypoint.text
     assert "chat-panel" in entrypoint.text
 

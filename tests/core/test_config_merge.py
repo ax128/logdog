@@ -1,7 +1,7 @@
 from copy import deepcopy
 import pytest
 
-from logwatch.core.config import (
+from logdog.core.config import (
     expand_effective_hosts,
     merge_host_config,
     resolve_runtime_settings,
@@ -524,7 +524,7 @@ def test_expand_effective_hosts_rejects_duplicate_host_names() -> None:
 def test_merge_containers_preserves_overrides() -> None:
     defaults = {
         "containers": {
-            "exclude": ["logwatch"],
+            "exclude": ["logdog"],
         }
     }
     host = {
@@ -539,5 +539,5 @@ def test_merge_containers_preserves_overrides() -> None:
     merged = merge_host_config(defaults, host)
     containers = merged["containers"]
     assert containers["include"] == ["api", "worker"]
-    assert containers["exclude"] == ["logwatch"]
+    assert containers["exclude"] == ["logdog"]
     assert containers["overrides"]["api"]["prompt_template"] == "api_alert"

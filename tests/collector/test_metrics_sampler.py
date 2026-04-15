@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from logwatch.collector.metrics import build_metric_sample, summarize_docker_stats
-from logwatch.collector.sampler import MetricsSampler
+from logdog.collector.metrics import build_metric_sample, summarize_docker_stats
+from logdog.collector.sampler import MetricsSampler
 
 
 def test_summarize_docker_stats_extracts_core_fields() -> None:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 
-from logwatch.main import create_app
+from logdog.main import create_app
 
 
 class _FakeUpdater:

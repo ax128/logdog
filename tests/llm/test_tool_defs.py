@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from logwatch.llm.tool_defs import TOOL_METAS, build_args_schema
+from logdog.llm.tool_defs import TOOL_METAS, build_args_schema
 
 
 def test_all_eight_tools_defined() -> None:

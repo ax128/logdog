@@ -4,7 +4,7 @@ import asyncio
 import json
 import sqlite3
 
-from logwatch.main import create_app
+from logdog.main import create_app
 
 
 class _SyncCursor:
@@ -93,7 +93,7 @@ def test_main_metrics_scheduler_uses_env_db_path_when_not_explicit(monkeypatch) 
     sync_conn = sqlite3.connect(":memory:")
     wrapped_conn = _SyncAioSqliteConn(sync_conn)
     connect_calls: list[str] = []
-    monkeypatch.setenv("LOGWATCH_METRICS_DB_PATH", "custom-metrics.db")
+    monkeypatch.setenv("LOGDOG_METRICS_DB_PATH", "custom-metrics.db")
 
     async def connector(_host: dict) -> dict:
         return {"server_version": "24.0.7"}
@@ -147,7 +147,7 @@ def test_main_metrics_scheduler_uses_app_config_db_path_when_no_env_and_no_expli
     sync_conn = sqlite3.connect(":memory:")
     wrapped_conn = _SyncAioSqliteConn(sync_conn)
     connect_calls: list[str] = []
-    monkeypatch.delenv("LOGWATCH_METRICS_DB_PATH", raising=False)
+    monkeypatch.delenv("LOGDOG_METRICS_DB_PATH", raising=False)
 
     async def connector(_host: dict) -> dict:
         return {"server_version": "24.0.7"}

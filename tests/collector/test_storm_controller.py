@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from logwatch.collector.storm import AlertStormController
+from logdog.collector.storm import AlertStormController
 
 
 def test_storm_controller_rejects_invalid_positive_parameters_when_enabled() -> None:

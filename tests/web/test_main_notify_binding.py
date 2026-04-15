@@ -4,8 +4,8 @@ import sqlite3
 
 import pytest
 
-import logwatch.main as main_module
-from logwatch.main import create_app
+import logdog.main as main_module
+from logdog.main import create_app
 
 
 class _SyncCursor:
@@ -287,7 +287,7 @@ def test_main_app_notify_router_applies_telegram_message_mode_from_config() -> N
 
     assert len(telegram_calls) == 1
     assert telegram_calls[0][0] == "tg-1"
-    assert "LogWatch Notification" in telegram_calls[0][1]
+    assert "LogDog Notification" in telegram_calls[0][1]
     assert "service down" in telegram_calls[0][1]
 
 
@@ -709,7 +709,7 @@ def test_main_app_notify_router_uses_builtin_telegram_sender_with_auto_target(
         def send(target: str, message: str, parse_mode: str = "") -> None:
             telegram_calls.append((target, message))
 
-        setattr(send, "_logwatch_supports_auto_target", True)
+        setattr(send, "_logdog_supports_auto_target", True)
         return send
 
     async def connector(_host: dict) -> dict:
@@ -760,7 +760,7 @@ def test_main_app_notify_router_supports_multiple_telegram_bot_tokens_from_confi
         def send(target: str, message: str, parse_mode: str = "") -> None:
             telegram_calls.append((normalized, target, message))
 
-        setattr(send, "_logwatch_supports_auto_target", True)
+        setattr(send, "_logdog_supports_auto_target", True)
         return send
 
     async def connector(_host: dict) -> dict:

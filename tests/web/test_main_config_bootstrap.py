@@ -7,7 +7,7 @@ from textwrap import dedent
 import pytest
 from fastapi.testclient import TestClient
 
-import logwatch.main as main_module
+import logdog.main as main_module
 
 
 def _write_yaml(path: Path, content: str) -> Path:
@@ -97,7 +97,7 @@ def test_create_app_prefers_explicit_app_config_over_config_path_and_env(
             url: unix:///from-env.sock
         """,
     )
-    monkeypatch.setenv("LOGWATCH_CONFIG", str(env_path))
+    monkeypatch.setenv("LOGDOG_CONFIG", str(env_path))
 
     app = main_module.create_app(
         app_config={"hosts": [{"name": "from-app", "url": "unix:///from-app.sock"}]},
@@ -120,7 +120,7 @@ def test_create_app_loads_hosts_from_config_path_and_expands_defaults(
     assert "config_path" in inspect.signature(main_module.create_app).parameters
 
     config_path = _write_yaml(
-        tmp_path / "logwatch.yaml",
+        tmp_path / "logdog.yaml",
         """
         defaults:
           ssh_key: /keys/default.pem
@@ -149,9 +149,9 @@ def test_create_app_uses_default_config_path_when_present(
     assert "config_path" in inspect.signature(main_module.create_app).parameters
 
     monkeypatch.chdir(tmp_path)
-    monkeypatch.delenv("LOGWATCH_CONFIG", raising=False)
+    monkeypatch.delenv("LOGDOG_CONFIG", raising=False)
     _write_yaml(
-        tmp_path / "config" / "logwatch.yaml",
+        tmp_path / "config" / "logdog.yaml",
         """
         hosts:
           - name: default-file
@@ -176,7 +176,7 @@ def test_create_app_preserves_explicit_hosts_seam_over_loaded_config(
     assert "config_path" in inspect.signature(main_module.create_app).parameters
 
     config_path = _write_yaml(
-        tmp_path / "logwatch.yaml",
+        tmp_path / "logdog.yaml",
         """
         hosts:
           - name: from-file
@@ -202,9 +202,9 @@ def test_create_app_explicit_hosts_seam_ignores_invalid_implicit_config(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    monkeypatch.delenv("LOGWATCH_CONFIG", raising=False)
+    monkeypatch.delenv("LOGDOG_CONFIG", raising=False)
     _write_yaml(
-        tmp_path / "config" / "logwatch.yaml",
+        tmp_path / "config" / "logdog.yaml",
         """
         - name: broken
           url: unix:///broken.sock
@@ -228,7 +228,7 @@ async def test_main_app_default_reload_action_reloads_hosts_from_config_file(
     tmp_path: Path,
 ) -> None:
     config_path = _write_yaml(
-        tmp_path / "logwatch.yaml",
+        tmp_path / "logdog.yaml",
         """
         hosts:
           - name: alpha
@@ -266,7 +266,7 @@ async def test_main_app_default_reload_action_preserves_old_state_on_invalid_con
     tmp_path: Path,
 ) -> None:
     config_path = _write_yaml(
-        tmp_path / "logwatch.yaml",
+        tmp_path / "logdog.yaml",
         """
         hosts:
           - name: alpha
@@ -303,7 +303,7 @@ async def test_main_app_default_reload_action_rebuilds_notify_router_targets(
     tmp_path: Path,
 ) -> None:
     config_path = _write_yaml(
-        tmp_path / "logwatch.yaml",
+        tmp_path / "logdog.yaml",
         """
         hosts:
           - name: local
@@ -393,7 +393,7 @@ async def test_main_app_reload_rebuilds_telegram_runtime_when_lifespan_running(
             self._events.append(f"{self._name}:app:shutdown")
 
     config_path = _write_yaml(
-        tmp_path / "logwatch.yaml",
+        tmp_path / "logdog.yaml",
         """
         hosts:
           - name: local
@@ -505,7 +505,7 @@ async def test_main_app_reload_keeps_old_telegram_runtime_when_candidate_start_f
             self._events.append(f"{self._name}:app:shutdown")
 
     config_path = _write_yaml(
-        tmp_path / "logwatch.yaml",
+        tmp_path / "logdog.yaml",
         """
         hosts:
           - name: local
@@ -605,7 +605,7 @@ async def test_main_app_reload_restores_host_manager_state_when_candidate_start_
             return None
 
     config_path = _write_yaml(
-        tmp_path / "logwatch.yaml",
+        tmp_path / "logdog.yaml",
         """
         hosts:
           - name: alpha
@@ -678,7 +678,7 @@ async def test_main_app_reload_starts_report_scheduler_when_added_during_running
     monkeypatch.setattr(main_module, "ReportScheduler", _ReportSchedulerSpy)
 
     config_path = _write_yaml(
-        tmp_path / "logwatch.yaml",
+        tmp_path / "logdog.yaml",
         """
         hosts:
           - name: local

@@ -1,6 +1,6 @@
 import pytest
 
-from logwatch.pipeline.filter import apply_rules
+from logdog.pipeline.filter import apply_rules
 
 
 def sample_config():

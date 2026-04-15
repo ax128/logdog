@@ -4,7 +4,7 @@ import asyncio
 
 import httpx
 
-from logwatch.web.api import create_api_app
+from logdog.web.api import create_api_app
 
 
 def test_metrics_endpoint_maps_value_error_to_bad_request() -> None:

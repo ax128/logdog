@@ -6,8 +6,8 @@ from typing import Any
 
 import pytest
 
-from logwatch.llm.tool_types import ToolResult
-from logwatch.llm.tools import create_tool_registry
+from logdog.llm.tool_types import ToolResult
+from logdog.llm.tools import create_tool_registry
 
 
 class _HostManagerStub:

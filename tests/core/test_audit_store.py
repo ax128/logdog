@@ -5,7 +5,7 @@ import sqlite3
 import aiosqlite
 import pytest
 
-from logwatch.core.db import init_db, insert_audit, query_audit
+from logdog.core.db import init_db, insert_audit, query_audit
 
 
 class _SyncCursor:

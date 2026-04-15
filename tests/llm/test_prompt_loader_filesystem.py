@@ -5,8 +5,8 @@ from textwrap import dedent
 
 import pytest
 
-import logwatch.llm.prompts.loader as prompt_loader
-from logwatch.llm.prompts.loader import load_template
+import logdog.llm.prompts.loader as prompt_loader
+from logdog.llm.prompts.loader import load_template
 
 
 def test_load_template_reads_non_alert_prompt_from_filesystem() -> None:

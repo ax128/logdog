@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from logwatch.core.retention_scheduler import RetentionCleanupScheduler
+from logdog.core.retention_scheduler import RetentionCleanupScheduler
 
 
 class _FakeScheduler:

@@ -29,7 +29,7 @@ class _HostManagerStub:
 
 
 def _schedule_report_runner_cls():
-    module = importlib.import_module("logwatch.collector.reports")
+    module = importlib.import_module("logdog.collector.reports")
     return module.ScheduleReportRunner
 
 

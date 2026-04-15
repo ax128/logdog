@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from logwatch.collector.watch_manager import WatchManager
+from logdog.collector.watch_manager import WatchManager
 
 
 class _HostManagerStub:
@@ -29,7 +29,7 @@ class _HostManagerStub:
                 return
 
 
-class _LogWatcherStub:
+class _LogDogerStub:
     def __init__(self, host: dict) -> None:
         self.host = host
         self.started = 0
@@ -72,11 +72,11 @@ class _FailingEventWatcherStub(_EventWatcherStub):
 
 @pytest.mark.asyncio
 async def test_watch_manager_starts_connected_hosts_and_refreshes_target_host() -> None:
-    created_log_watchers: dict[str, _LogWatcherStub] = {}
+    created_log_watchers: dict[str, _LogDogerStub] = {}
     created_event_watchers: dict[str, _EventWatcherStub] = {}
 
-    def build_log_watcher(host: dict) -> _LogWatcherStub:
-        watcher = _LogWatcherStub(host)
+    def build_log_watcher(host: dict) -> _LogDogerStub:
+        watcher = _LogDogerStub(host)
         created_log_watchers[host["name"]] = watcher
         return watcher
 
@@ -107,11 +107,11 @@ async def test_watch_manager_starts_connected_hosts_and_refreshes_target_host() 
 @pytest.mark.asyncio
 async def test_watch_manager_reacts_to_host_status_transitions() -> None:
     host_manager = _HostManagerStub()
-    log_watchers: list[_LogWatcherStub] = []
+    log_watchers: list[_LogDogerStub] = []
     event_watchers: list[_EventWatcherStub] = []
 
-    def build_log_watcher(host: dict) -> _LogWatcherStub:
-        watcher = _LogWatcherStub(host)
+    def build_log_watcher(host: dict) -> _LogDogerStub:
+        watcher = _LogDogerStub(host)
         log_watchers.append(watcher)
         return watcher
 
@@ -151,12 +151,12 @@ async def test_watch_manager_reload_keeps_old_watchers_when_candidate_start_fail
     None
 ):
     host_manager = _HostManagerStub()
-    created_log_watchers: list[_LogWatcherStub] = []
+    created_log_watchers: list[_LogDogerStub] = []
     created_event_watchers: list[_FailingEventWatcherStub] = []
     creation_round = {"n": 0}
 
-    def build_log_watcher(host: dict) -> _LogWatcherStub:
-        watcher = _LogWatcherStub(host)
+    def build_log_watcher(host: dict) -> _LogDogerStub:
+        watcher = _LogDogerStub(host)
         created_log_watchers.append(watcher)
         return watcher
 

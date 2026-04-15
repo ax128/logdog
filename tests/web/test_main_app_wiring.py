@@ -1,8 +1,8 @@
 import asyncio
 
 import httpx
-from logwatch.llm.agent_runtime import DEFAULT_CHAT_FALLBACK_MESSAGE
-from logwatch.main import create_app
+from logdog.llm.agent_runtime import DEFAULT_CHAT_FALLBACK_MESSAGE
+from logdog.main import create_app
 from starlette.routing import WebSocketRoute
 from starlette.websockets import WebSocketDisconnect
 

@@ -1,7 +1,7 @@
 services:
-  logwatch:
+  logdog:
     build: .
-    container_name: logwatch
+    container_name: logdog
     restart: unless-stopped
     ports:
       - "11680:8000"

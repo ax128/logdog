@@ -4,11 +4,11 @@ import asyncio
 
 import pytest
 
-import logwatch.collector.log_stream as log_stream_module
-from logwatch.collector.log_stream import LogStreamWatcher, run_alert_once, _parse_log_timestamp
-from logwatch.collector.storm import AlertStormController
-from logwatch.pipeline.cooldown import CooldownStore
-from logwatch.pipeline.preprocessor.base import BasePreprocessor, LogLine
+import logdog.collector.log_stream as log_stream_module
+from logdog.collector.log_stream import LogStreamWatcher, run_alert_once, _parse_log_timestamp
+from logdog.collector.storm import AlertStormController
+from logdog.pipeline.cooldown import CooldownStore
+from logdog.pipeline.preprocessor.base import BasePreprocessor, LogLine
 
 
 class _SuffixPreprocessor(BasePreprocessor):

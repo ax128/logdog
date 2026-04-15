@@ -5,7 +5,7 @@ import sqlite3
 import aiosqlite
 import pytest
 
-from logwatch.core.db import (
+from logdog.core.db import (
     delete_mute,
     find_active_mute,
     init_db,

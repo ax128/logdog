@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from logwatch.llm.tool_types import ToolContext, ToolResult
+from logdog.llm.tool_types import ToolContext, ToolResult
 
 
 def test_tool_result_ok_factory() -> None:

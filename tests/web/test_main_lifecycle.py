@@ -1,8 +1,8 @@
 import asyncio
 from typing import Any, cast
 
-import logwatch.main as main_module
-from logwatch.main import create_app
+import logdog.main as main_module
+from logdog.main import create_app
 
 
 def test_main_app_uses_lifespan_not_on_event_hooks() -> None:

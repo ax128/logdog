@@ -9,15 +9,15 @@ import pytest
 
 
 def _import_preprocessor_loader():
-    spec = importlib.util.find_spec("logwatch.pipeline.preprocessor.loader")
+    spec = importlib.util.find_spec("logdog.pipeline.preprocessor.loader")
     assert spec is not None
-    return importlib.import_module("logwatch.pipeline.preprocessor.loader")
+    return importlib.import_module("logdog.pipeline.preprocessor.loader")
 
 
 def _import_preprocessor_base():
-    spec = importlib.util.find_spec("logwatch.pipeline.preprocessor.base")
+    spec = importlib.util.find_spec("logdog.pipeline.preprocessor.base")
     assert spec is not None
-    return importlib.import_module("logwatch.pipeline.preprocessor.base")
+    return importlib.import_module("logdog.pipeline.preprocessor.base")
 
 
 def _write_module(path: Path, content: str) -> None:
@@ -52,7 +52,7 @@ def test_load_preprocessors_skips_user_modules_by_default(tmp_path: Path) -> Non
     _write_module(
         config_dir / "10_custom.py",
         """
-        from logwatch.pipeline.preprocessor.base import BasePreprocessor
+        from logdog.pipeline.preprocessor.base import BasePreprocessor
 
 
         class CustomPreprocessor(BasePreprocessor):
@@ -78,7 +78,7 @@ def test_load_preprocessors_supports_explicit_enable_switch(tmp_path: Path) -> N
     _write_module(
         config_dir / "10_custom.py",
         """
-        from logwatch.pipeline.preprocessor.base import BasePreprocessor
+        from logdog.pipeline.preprocessor.base import BasePreprocessor
 
 
         class CustomPreprocessor(BasePreprocessor):
@@ -111,7 +111,7 @@ def test_load_preprocessors_supports_class_or_instance_exports_calls_on_load_and
     _write_module(
         config_dir / "20_second.py",
         """
-        from logwatch.pipeline.preprocessor.base import BasePreprocessor
+        from logdog.pipeline.preprocessor.base import BasePreprocessor
 
 
         class SecondPreprocessor(BasePreprocessor):
@@ -129,7 +129,7 @@ def test_load_preprocessors_supports_class_or_instance_exports_calls_on_load_and
     _write_module(
         config_dir / "10_first.py",
         """
-        from logwatch.pipeline.preprocessor.base import BasePreprocessor
+        from logdog.pipeline.preprocessor.base import BasePreprocessor
 
 
         class FirstPreprocessor(BasePreprocessor):

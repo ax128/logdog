@@ -7,9 +7,9 @@ import pytest
 
 
 def _import_render_module():
-    spec = importlib.util.find_spec("logwatch.notify.render")
+    spec = importlib.util.find_spec("logdog.notify.render")
     assert spec is not None
-    return importlib.import_module("logwatch.notify.render")
+    return importlib.import_module("logdog.notify.render")
 
 
 def test_render_output_renders_alert_context_from_standard_template() -> None:

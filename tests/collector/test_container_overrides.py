@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from logwatch.collector.log_stream import LogStreamWatcher
+from logdog.collector.log_stream import LogStreamWatcher
 
 
 def _make_watcher(host_config: dict) -> LogStreamWatcher:

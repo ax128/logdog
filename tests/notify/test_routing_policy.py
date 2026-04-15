@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from logwatch.notify.policy import build_notify_routing_policy
+from logdog.notify.policy import build_notify_routing_policy
 
 
 def test_notify_policy_matches_container_specific_rule_then_fallback() -> None:

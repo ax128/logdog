@@ -1,4 +1,4 @@
-from logwatch.pipeline.cooldown import CooldownStore
+from logdog.pipeline.cooldown import CooldownStore
 
 
 def test_cooldown_blocks_same_host_container_category_within_window():

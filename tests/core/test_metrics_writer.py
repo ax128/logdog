@@ -5,7 +5,7 @@ from typing import Any
 
 import pytest
 
-from logwatch.core.metrics_writer import MetricsSqliteWriter
+from logdog.core.metrics_writer import MetricsSqliteWriter
 
 
 class _ConnStub:

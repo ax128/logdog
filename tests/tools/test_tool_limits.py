@@ -1,6 +1,6 @@
 import pytest
 
-from logwatch.llm.tools import (
+from logdog.llm.tools import (
     RateLimiter,
     create_tool_registry,
     validate_query_logs_args,

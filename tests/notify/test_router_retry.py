@@ -3,14 +3,14 @@ import time
 
 import pytest
 
-from logwatch.notify.base import BaseNotifier
-from logwatch.notify.base import split_message
-from logwatch.notify.router import NotifyRouter
-from logwatch.notify.telegram import TelegramNotifier
-from logwatch.notify.weixin import WeixinNotifier
-from logwatch.notify.wecom import WecomNotifier
-from logwatch.notify.wechat import WechatNotifier
-from logwatch.main import _build_multi_target_send_func
+from logdog.notify.base import BaseNotifier
+from logdog.notify.base import split_message
+from logdog.notify.router import NotifyRouter
+from logdog.notify.telegram import TelegramNotifier
+from logdog.notify.weixin import WeixinNotifier
+from logdog.notify.wecom import WecomNotifier
+from logdog.notify.wechat import WechatNotifier
+from logdog.main import _build_multi_target_send_func
 
 
 class _FailingNotifier(BaseNotifier):
@@ -265,7 +265,7 @@ async def test_retry_uses_backoff_between_attempts(
     async def fake_sleep(seconds: float) -> None:
         sleeps.append(seconds)
 
-    monkeypatch.setattr("logwatch.notify.router.asyncio.sleep", fake_sleep)
+    monkeypatch.setattr("logdog.notify.router.asyncio.sleep", fake_sleep)
 
     router = NotifyRouter([notifier], max_retries=2, retry_backoff_seconds=0.01)
     ok = await router.send("h1", "msg", "ERROR")
@@ -301,7 +301,7 @@ async def test_telegram_notifier_supports_doc_message_mode() -> None:
     await notifier.send("chat-id", "service down", "ERROR")
 
     assert len(chunks) == 1
-    assert "LogWatch Notification" in chunks[0]
+    assert "LogDog Notification" in chunks[0]
     assert "service down" in chunks[0]
 
 
@@ -376,7 +376,7 @@ async def test_multi_target_send_func_prunes_expired_retry_state(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     now = {"value": 0.0}
-    monkeypatch.setattr("logwatch.main.time.monotonic", lambda: now["value"])
+    monkeypatch.setattr("logdog.main.time.monotonic", lambda: now["value"])
 
     async def telegram_send(_target: str, _message: str, parse_mode: str = "") -> None:
         raise RuntimeError("always fail")

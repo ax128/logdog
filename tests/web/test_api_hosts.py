@@ -2,7 +2,7 @@ import asyncio
 
 import httpx
 
-from logwatch.main import create_app
+from logdog.main import create_app
 
 
 def test_api_hosts_returns_host_statuses() -> None:

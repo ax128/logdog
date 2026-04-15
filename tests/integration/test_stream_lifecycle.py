@@ -6,8 +6,8 @@ from typing import Any, cast
 
 import pytest
 
-from logwatch.main import create_app
-from logwatch.core.host_manager import HostManager
+from logdog.main import create_app
+from logdog.core.host_manager import HostManager
 
 
 class _SyncCursor:

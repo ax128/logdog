@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import asyncio
 
-import logwatch.main as main_module
-from logwatch.main import create_app
+import logdog.main as main_module
+from logdog.main import create_app
 
 
 def test_main_app_uses_app_config_metrics_interval_when_not_explicit() -> None:

@@ -1,8 +1,8 @@
 import asyncio
 import pytest
 
-from logwatch.llm.agent_runtime import DEFAULT_CHAT_FALLBACK_MESSAGE
-from logwatch.web.chat import create_chat_app
+from logdog.llm.agent_runtime import DEFAULT_CHAT_FALLBACK_MESSAGE
+from logdog.web.chat import create_chat_app
 from starlette.exceptions import WebSocketException
 from starlette.websockets import WebSocketDisconnect
 

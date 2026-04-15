@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-import logwatch.core.docker_connector as docker_connector
+import logdog.core.docker_connector as docker_connector
 
 
 class _FakeContainerObj:

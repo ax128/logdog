@@ -4,8 +4,8 @@ from typing import Any
 
 import pytest
 
-from logwatch.llm.analyzer import analyze_with_template
-from logwatch.llm.prompts.base import BasePromptTemplate
+from logdog.llm.analyzer import analyze_with_template
+from logdog.llm.prompts.base import BasePromptTemplate
 
 
 def test_fallback_on_missing_required_vars():

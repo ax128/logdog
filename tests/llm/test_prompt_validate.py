@@ -1,4 +1,4 @@
-from logwatch.llm.prompts.loader import load_template
+from logdog.llm.prompts.loader import load_template
 
 
 def test_heartbeat_scene_does_not_require_logs():

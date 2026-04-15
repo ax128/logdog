@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from logwatch.llm.provider import LLMParams, resolve_llm_params
+from logdog.llm.provider import LLMParams, resolve_llm_params
 
 
 class TestResolveLlmParams:

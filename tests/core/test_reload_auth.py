@@ -1,6 +1,6 @@
 import pytest
 
-from logwatch.web.api import verify_admin_token
+from logdog.web.api import verify_admin_token
 
 
 def test_admin_token_missing_header_permission_error() -> None:

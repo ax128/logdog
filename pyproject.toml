@@ -1,9 +1,9 @@
 [project]
-name = "logwatch"
+name = "logdog"
 version = "0.1.0"
-description = "Minimal LogWatch service"
+description = "Minimal LogDog service"
 authors = [
-    { name = "LogWatch Team", email = "team@example.com" },
+    { name = "LogDog Team", email = "team@example.com" },
 ]
 requires-python = ">=3.11"
 dependencies = [
@@ -36,11 +36,11 @@ include-package-data = true
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["logwatch*"]
+include = ["logdog*"]
 namespaces = true
 
 [tool.setuptools.package-data]
-"logwatch.web" = ["static/**"]
+"logdog.web" = ["static/**"]
 
 [build-system]
 requires = ["setuptools>=61.0", "wheel"]

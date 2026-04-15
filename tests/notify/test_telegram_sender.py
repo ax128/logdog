@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 import pytest
 
-from logwatch.notify.telegram import TelegramBotTokenSender, TelegramNotifier
+from logdog.notify.telegram import TelegramBotTokenSender, TelegramNotifier
 
 
 def _make_sender() -> TelegramBotTokenSender:
@@ -227,7 +227,7 @@ class TestDownloadFile:
         fake_response = io.BytesIO(b"file content here")
         fake_response.read_orig = fake_response.read
 
-        with patch("logwatch.notify.telegram.urlopen") as mock_urlopen:
+        with patch("logdog.notify.telegram.urlopen") as mock_urlopen:
             ctx = mock_urlopen.return_value.__enter__.return_value
             ctx.read = fake_response.read
             result = sender.download_file("file123", str(dest))

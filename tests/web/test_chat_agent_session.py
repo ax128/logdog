@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import asyncio
 
-from logwatch.llm.agent_runtime import DEFAULT_CHAT_FALLBACK_MESSAGE
-from logwatch.web.chat import create_chat_app
+from logdog.llm.agent_runtime import DEFAULT_CHAT_FALLBACK_MESSAGE
+from logdog.web.chat import create_chat_app
 from starlette.websockets import WebSocketDisconnect
 
 

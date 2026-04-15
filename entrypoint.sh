@@ -7,8 +7,8 @@ mkdir -p /root/.ssh
 chmod 700 /root/.ssh
 
 # Scan all SSH host URLs from config (extract host:port from ssh:// URLs)
-if [ -f /app/config/logwatch.yaml ]; then
-    grep -oP 'ssh://[^@]+@\K[^/\s"]+' /app/config/logwatch.yaml 2>/dev/null | while read -r hostport; do
+if [ -f /app/config/logdog.yaml ]; then
+    grep -oP 'ssh://[^@]+@\K[^/\s"]+' /app/config/logdog.yaml 2>/dev/null | while read -r hostport; do
         host="${hostport%%:*}"
         port="${hostport##*:}"
         if [ "$port" = "$host" ]; then

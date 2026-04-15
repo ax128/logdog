@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from logwatch.core.host_manager import HostManager
+from logdog.core.host_manager import HostManager
 
 
 @pytest.mark.asyncio
@@ -42,7 +42,7 @@ async def test_startup_marks_missing_ssh_key_disconnected() -> None:
             {
                 "name": "prod",
                 "url": "ssh://deploy@10.0.1.10",
-                "ssh_key": "/tmp/non-existent-logwatch-key.pem",
+                "ssh_key": "/tmp/non-existent-logdog-key.pem",
             }
         ],
         connector=connector,

@@ -5,7 +5,7 @@ import sqlite3
 import aiosqlite
 import pytest
 
-from logwatch.core.db import (
+from logdog.core.db import (
     apply_sqlite_pragmas,
     init_db,
     insert_alert,

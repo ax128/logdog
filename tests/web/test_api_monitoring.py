@@ -5,7 +5,7 @@ import sqlite3
 
 import httpx
 
-from logwatch.core.db import (
+from logdog.core.db import (
     init_db,
     insert_alert,
     insert_host_metric_sample,
@@ -13,7 +13,7 @@ from logwatch.core.db import (
     insert_mute,
     insert_storm_event,
 )
-from logwatch.main import create_app
+from logdog.main import create_app
 
 
 class _SyncCursor:

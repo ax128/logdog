@@ -5,7 +5,7 @@ from textwrap import dedent
 
 import pytest
 
-from logwatch.core.config import load_app_config, resolve_config_path
+from logdog.core.config import load_app_config, resolve_config_path
 
 
 def _write_yaml(path: Path, content: str) -> Path:
@@ -15,7 +15,7 @@ def _write_yaml(path: Path, content: str) -> Path:
 
 def test_load_app_config_reads_yaml_mapping(tmp_path: Path) -> None:
     config_path = _write_yaml(
-        tmp_path / "logwatch.yaml",
+        tmp_path / "logdog.yaml",
         """
         metrics:
           sample_interval_seconds: 45
@@ -38,7 +38,7 @@ def test_load_app_config_reads_yaml_mapping(tmp_path: Path) -> None:
 
 def test_load_app_config_requires_mapping_root(tmp_path: Path) -> None:
     config_path = _write_yaml(
-        tmp_path / "logwatch.yaml",
+        tmp_path / "logdog.yaml",
         """
         - name: edge
           url: unix:///var/run/docker.sock
@@ -52,7 +52,7 @@ def test_load_app_config_requires_mapping_root(tmp_path: Path) -> None:
 def test_resolve_config_path_prefers_explicit_argument(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("LOGWATCH_CONFIG", "/tmp/from-env.yaml")
+    monkeypatch.setenv("LOGDOG_CONFIG", "/tmp/from-env.yaml")
 
     assert resolve_config_path("/tmp/from-arg.yaml") == "/tmp/from-arg.yaml"
 
@@ -60,7 +60,7 @@ def test_resolve_config_path_prefers_explicit_argument(
 def test_resolve_config_path_uses_env_when_argument_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("LOGWATCH_CONFIG", "/tmp/from-env.yaml")
+    monkeypatch.setenv("LOGDOG_CONFIG", "/tmp/from-env.yaml")
 
     assert resolve_config_path(None) == "/tmp/from-env.yaml"
 
@@ -68,6 +68,6 @@ def test_resolve_config_path_uses_env_when_argument_missing(
 def test_resolve_config_path_falls_back_to_default_relative_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.delenv("LOGWATCH_CONFIG", raising=False)
+    monkeypatch.delenv("LOGDOG_CONFIG", raising=False)
 
-    assert resolve_config_path(None) == "config/logwatch.yaml"
+    assert resolve_config_path(None) == "config/logdog.yaml"
