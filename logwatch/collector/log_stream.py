@@ -87,6 +87,29 @@ async def _default_save_storm_event(_payload: dict[str, Any]) -> bool:
     return True
 
 
+def _parse_log_timestamp(raw: str) -> float | None:
+    """Parse a Docker log timestamp string to epoch seconds."""
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    try:
+        # Docker timestamps: "2024-01-15T10:30:00.123456789Z"
+        # Python can't parse nanoseconds, truncate to microseconds
+        if "." in text:
+            base, frac = text.split(".", 1)
+            # Remove trailing Z or timezone
+            frac_clean = frac.rstrip("Z")
+            if len(frac_clean) > 6:
+                frac_clean = frac_clean[:6]
+            text = f"{base}.{frac_clean}+00:00"
+        elif text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        dt = datetime.fromisoformat(text)
+        return dt.timestamp()
+    except (ValueError, TypeError, OSError):
+        return None
+
+
 def _format_ts(ts: float) -> str:
     return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
 
@@ -645,6 +668,10 @@ class LogStreamWatcher:
         self._queue_maxsize = max(1, int(watch_settings.get("queue_maxsize", 1024)))
         self._worker_count = max(1, int(watch_settings.get("worker_count", 2)))
         self._drop_when_full = bool(watch_settings.get("drop_when_full", True))
+        self._watch_lookback_seconds = max(
+            0,
+            int(watch_settings.get("lookback_seconds", 300)),
+        )
         self._reconnect_backoff_seconds = min(
             max(
                 0.0,
@@ -726,9 +753,30 @@ class LogStreamWatcher:
         managed_mode = (
             current_task is not None and current_task in self._container_tasks.values()
         )
+
+        # Determine initial lookback window
+        lookback = self._watch_lookback_seconds
+        last_log_ts: float | None = None
+
         while True:
             try:
-                async for record in self._stream_logs(self._host, container):
+                # Calculate 'since' for this stream iteration
+                stream_kwargs: dict[str, Any] = {}
+                if last_log_ts is not None:
+                    # Reconnect: resume from last processed timestamp
+                    stream_kwargs["since"] = int(last_log_ts)
+                elif lookback > 0:
+                    # First connect: only look back N seconds
+                    stream_kwargs["since"] = int(time.time() - lookback)
+
+                async for record in self._stream_logs(self._host, container, **stream_kwargs):
+                    # Track timestamp for reconnect resume
+                    ts_raw = record.get("timestamp") or ""
+                    if ts_raw:
+                        parsed_ts = _parse_log_timestamp(ts_raw)
+                        if parsed_ts is not None:
+                            last_log_ts = parsed_ts
+
                     lines = self._apply_preprocessors(
                         LogLine(
                             host_name=host_name,

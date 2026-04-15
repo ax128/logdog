@@ -5,7 +5,7 @@ import asyncio
 import pytest
 
 import logwatch.collector.log_stream as log_stream_module
-from logwatch.collector.log_stream import LogStreamWatcher, run_alert_once
+from logwatch.collector.log_stream import LogStreamWatcher, run_alert_once, _parse_log_timestamp
 from logwatch.collector.storm import AlertStormController
 from logwatch.pipeline.cooldown import CooldownStore
 from logwatch.pipeline.preprocessor.base import BasePreprocessor, LogLine
@@ -429,3 +429,44 @@ async def test_log_stream_watcher_reconnects_after_stream_eof() -> None:
         await watcher.shutdown()
 
     assert attempts["n"] >= 2
+
+
+class TestParseLogTimestamp:
+    def test_docker_timestamp_with_nanos(self) -> None:
+        ts = _parse_log_timestamp("2024-01-15T10:30:00.123456789Z")
+        assert ts is not None
+        assert abs(ts - 1705314600.123456) < 1.0  # within 1 second
+
+    def test_docker_timestamp_without_nanos(self) -> None:
+        ts = _parse_log_timestamp("2024-01-15T10:30:00Z")
+        assert ts is not None
+
+    def test_empty_returns_none(self) -> None:
+        assert _parse_log_timestamp("") is None
+        assert _parse_log_timestamp(None) is None
+
+    def test_invalid_returns_none(self) -> None:
+        assert _parse_log_timestamp("not-a-timestamp") is None
+
+
+class TestWatchLookbackConfig:
+    def test_default_lookback_is_300(self) -> None:
+        watcher = LogStreamWatcher(
+            host={"name": "test"},
+            stream_logs=None,
+        )
+        assert watcher._watch_lookback_seconds == 300
+
+    def test_custom_lookback_from_config(self) -> None:
+        watcher = LogStreamWatcher(
+            host={"name": "test", "watch": {"lookback_seconds": 60}},
+            stream_logs=None,
+        )
+        assert watcher._watch_lookback_seconds == 60
+
+    def test_zero_lookback_means_all_history(self) -> None:
+        watcher = LogStreamWatcher(
+            host={"name": "test", "watch": {"lookback_seconds": 0}},
+            stream_logs=None,
+        )
+        assert watcher._watch_lookback_seconds == 0
