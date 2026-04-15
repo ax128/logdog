@@ -264,3 +264,120 @@ async def test_docker_client_pool_recreates_client_after_idle_timeout() -> None:
 
 async def _run_sync(fn):
     return fn()
+
+
+# ---------------------------------------------------------------------------
+# ssh_key injection tests
+# ---------------------------------------------------------------------------
+
+
+def test_docker_client_kwargs_includes_ssh_key_for_ssh_url():
+    kwargs = docker_connector._docker_client_kwargs(
+        {"url": "ssh://deploy@10.0.0.1", "ssh_key": "/home/user/.ssh/id_ed25519"}
+    )
+    assert kwargs["base_url"] == "ssh://deploy@10.0.0.1"
+    assert kwargs["use_ssh_client"] is True
+    assert kwargs["_ssh_key"] == "/home/user/.ssh/id_ed25519"
+
+
+def test_docker_client_kwargs_no_ssh_key_for_non_ssh_url():
+    kwargs = docker_connector._docker_client_kwargs(
+        {"url": "unix:///var/run/docker.sock", "ssh_key": "/some/key"}
+    )
+    assert "_ssh_key" not in kwargs
+    assert "use_ssh_client" not in kwargs
+
+
+def test_docker_client_kwargs_no_ssh_key_when_not_configured():
+    kwargs = docker_connector._docker_client_kwargs({"url": "ssh://host"})
+    assert kwargs["use_ssh_client"] is True
+    assert "_ssh_key" not in kwargs
+
+
+def test_make_docker_client_strips_private_kwargs():
+    """_make_docker_client must not forward _ssh_key to DockerClient."""
+    import unittest.mock as mock
+
+    received: dict = {}
+
+    class _TrackingClient:
+        def __init__(self, **kw):
+            received.update(kw)
+
+    class _TrackingModule:
+        DockerClient = _TrackingClient
+
+    kwargs = {"base_url": "unix:///var/run/docker.sock", "_ssh_key": "/some/key"}
+    with mock.patch.object(
+        docker_connector, "_IMPORT_MODULE", side_effect=ImportError("no docker")
+    ):
+        docker_connector._make_docker_client(_TrackingModule(), kwargs)
+
+    assert "_ssh_key" not in received
+    assert received["base_url"] == "unix:///var/run/docker.sock"
+    # original kwargs dict must NOT be mutated
+    assert "_ssh_key" in kwargs
+
+
+def test_make_docker_client_injects_key_filename_into_ssh_params():
+    """_make_docker_client injects key_filename via the SSHHTTPAdapter monkey-patch."""
+    import unittest.mock as mock
+
+    captured_ssh_params: dict = {}
+
+    class _FakeSSHHTTPAdapter:
+        def _create_paramiko_client(self, base_url: str) -> None:
+            self.ssh_params = {"hostname": "10.0.0.1", "port": None, "username": "deploy"}
+
+    fake_adapter_cls = _FakeSSHHTTPAdapter
+
+    class _FakeSshconn:
+        SSHHTTPAdapter = fake_adapter_cls
+
+    class _CapturingClient:
+        def __init__(self, **kw):
+            # Simulate adapter creation and call the (possibly patched) method.
+            adapter = fake_adapter_cls()
+            adapter._create_paramiko_client("ssh://deploy@10.0.0.1")
+            captured_ssh_params.update(adapter.ssh_params)
+
+    class _CapturingModule:
+        DockerClient = _CapturingClient
+
+    with mock.patch.object(
+        docker_connector,
+        "_IMPORT_MODULE",
+        return_value=_FakeSshconn(),
+    ):
+        docker_connector._make_docker_client(
+            _CapturingModule(),
+            {"base_url": "ssh://deploy@10.0.0.1", "_ssh_key": "/home/user/.ssh/id_ed25519"},
+        )
+
+    assert captured_ssh_params.get("key_filename") == "/home/user/.ssh/id_ed25519"
+
+
+@pytest.mark.asyncio
+async def test_docker_client_pool_recreates_client_when_ssh_key_changes() -> None:
+    """Pool must treat a changed ssh_key as a config change requiring a new client."""
+    import unittest.mock as mock
+
+    _PoolFakeDockerClient.created = []
+    pool = docker_connector.DockerClientPool(
+        module_loader=lambda: _PoolFakeDockerModule(),
+        to_thread=_run_sync,
+    )
+
+    with mock.patch.object(
+        docker_connector, "_IMPORT_MODULE", side_effect=ImportError("no docker")
+    ):
+        await pool.connect_host(
+            {"name": "h1", "url": "ssh://deploy@10.0.0.1", "ssh_key": "/keys/id_rsa"}
+        )
+        await pool.connect_host(
+            {"name": "h1", "url": "ssh://deploy@10.0.0.1", "ssh_key": "/keys/id_ed25519"}
+        )
+
+    assert len(_PoolFakeDockerClient.created) == 2, "new ssh_key should trigger new client"
+    assert _PoolFakeDockerClient.created[0].closed is True
+    await pool.close_all()

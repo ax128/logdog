@@ -410,7 +410,7 @@ class DockerClientPool:
         await self._enforce_capacity_locked()
 
         docker_module = self._module_loader()
-        client = await self._to_thread(lambda: docker_module.DockerClient(**kwargs))
+        client = await self._to_thread(lambda: _make_docker_client(docker_module, kwargs))
         entry = _PooledClient(kwargs=kwargs, client=client, last_used_at=now)
         self._clients[key] = entry
         return entry
@@ -558,7 +558,7 @@ async def _run_with_client(host: dict[str, Any], operation) -> Any:
     kwargs = _docker_client_kwargs(host)
 
     def task() -> Any:
-        client = docker_module.DockerClient(**kwargs)
+        client = _make_docker_client(docker_module, kwargs)
         try:
             return operation(client)
         finally:
@@ -579,7 +579,7 @@ async def _open_stream_handle(
 ) -> _StreamHandle:
     docker_module = module_loader()
     kwargs = _docker_client_kwargs(host)
-    client = await to_thread(lambda: docker_module.DockerClient(**kwargs))
+    client = await to_thread(lambda: _make_docker_client(docker_module, kwargs))
     return _StreamHandle(
         client=client,
         operation=operation,
@@ -603,7 +603,55 @@ def _docker_client_kwargs(host: dict[str, Any]) -> dict[str, Any]:
     kwargs: dict[str, Any] = {"base_url": url}
     if url.startswith("ssh://"):
         kwargs["use_ssh_client"] = True
+        ssh_key = str(host.get("ssh_key") or "").strip()
+        if ssh_key:
+            # Private key: not forwarded to DockerClient directly; used by
+            # _make_docker_client to inject into paramiko's ssh_params.
+            kwargs["_ssh_key"] = ssh_key
     return kwargs
+
+
+_SSH_CLIENT_CREATE_LOCK = threading.Lock()
+
+
+def _make_docker_client(docker_module: Any, kwargs: dict[str, Any]) -> Any:
+    """Create a DockerClient, injecting ssh_key into the paramiko connection if configured.
+
+    kwargs may contain a private ``_ssh_key`` entry (not accepted by DockerClient).
+    We strip all underscore-prefixed private entries before forwarding kwargs to
+    DockerClient so callers can keep the full kwargs (including ``_ssh_key``) for
+    pool-entry equality comparisons without mutating the stored dict.
+    """
+    ssh_key = str(kwargs.get("_ssh_key") or "").strip()
+    client_kwargs = {k: v for k, v in kwargs.items() if not k.startswith("_")}
+
+    if not ssh_key:
+        return docker_module.DockerClient(**client_kwargs)
+
+    # Inject key_filename into paramiko's SSHHTTPAdapter._create_paramiko_client.
+    # The adapter builds ssh_params in that method; we wrap it to append
+    # key_filename immediately after the original runs.  A module-level lock
+    # serialises concurrent client creations so the temporary patch is safe.
+    try:
+        ssh_adapter_cls = _IMPORT_MODULE("docker.transport.sshconn").SSHHTTPAdapter
+    except Exception:  # noqa: BLE001
+        # docker SDK not available or pre-7 layout — create without key injection.
+        return docker_module.DockerClient(**client_kwargs)
+
+    original_create = ssh_adapter_cls._create_paramiko_client
+
+    def _patched_create(self: Any, base_url: str) -> None:
+        original_create(self, base_url)
+        # Unconditionally override key_filename; SSH config entries are
+        # still respected for proxy, hostname, port, and username.
+        self.ssh_params["key_filename"] = ssh_key
+
+    with _SSH_CLIENT_CREATE_LOCK:
+        ssh_adapter_cls._create_paramiko_client = _patched_create
+        try:
+            return docker_module.DockerClient(**client_kwargs)
+        finally:
+            ssh_adapter_cls._create_paramiko_client = original_create
 
 
 def _client_key(host: dict[str, Any]) -> str:
