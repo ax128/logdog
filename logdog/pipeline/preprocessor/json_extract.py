@@ -6,6 +6,9 @@ from logdog.pipeline.preprocessor.base import BasePreprocessor, LogLine
 
 
 _DEFAULT_FIELDS = ["level", "message", "msg", "error", "trace_id"]
+_KNOWN_LEVELS = frozenset({
+    "debug", "info", "warn", "warning", "error", "fatal", "panic", "critical",
+})
 
 
 def _try_parse_json(text: str) -> dict | None:
@@ -49,7 +52,8 @@ class JsonExtractPreprocessor(BasePreprocessor):
                 for f in self._fields
                 if f in parsed and parsed[f] is not None and parsed[f] != ""
             ]
-            json_level = str(parsed.get("level") or "").strip().lower() or None
+            _raw_level = str(parsed.get("level") or "").strip().lower()
+            json_level = _raw_level if _raw_level in _KNOWN_LEVELS else None
             result.append(LogLine(
                 host_name=line.host_name,
                 container_id=line.container_id,

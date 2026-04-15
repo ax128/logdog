@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import logging
 import re
 
 from logdog.pipeline.preprocessor.base import BasePreprocessor, LogLine
+
+
+logger = logging.getLogger(__name__)
 
 
 _LEVEL_ORDER: dict[str, int] = {
@@ -39,6 +43,10 @@ class LevelFilterPreprocessor(BasePreprocessor):
     def __init__(self, config: dict | None = None) -> None:
         cfg = config or {}
         raw = str(cfg.get("min_level", "warn")).lower()
+        if raw not in _LEVEL_ORDER:
+            logger.warning(
+                "level_filter: unrecognized min_level %r, falling back to 'warn'", raw
+            )
         self._min_order: int = _LEVEL_ORDER.get(raw, _LEVEL_ORDER["warn"])
 
     def process(self, lines: list[LogLine]) -> list[LogLine]:

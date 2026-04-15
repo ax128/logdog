@@ -62,3 +62,13 @@ def test_level_filter_warning_alias():
 def test_level_filter_panic_treated_as_fatal():
     line = _line("panic: nil ptr", level="panic")
     assert LevelFilterPreprocessor(config={"min_level": "error"}).process([line]) == [line]
+
+
+def test_level_filter_unknown_min_level_falls_back_to_warn(caplog):
+    import logging
+    with caplog.at_level(logging.WARNING, logger="logdog.pipeline.preprocessor.level_filter"):
+        p = LevelFilterPreprocessor(config={"min_level": "verbose"})
+    assert any("verbose" in r.message for r in caplog.records)
+    # falls back to warn: debug line dropped, warn line kept
+    lines = [_line("d", level="debug"), _line("w", level="warn")]
+    assert [l.level for l in p.process(lines)] == ["warn"]

@@ -85,6 +85,13 @@ def test_json_extract_empty_string_field_excluded():
     assert "message=service started" in content
 
 
+def test_json_extract_non_string_level_not_backfilled():
+    # Malformed JSON level (dict/list) should not pollute LogLine.level
+    line = _line(_j({"level": {"severity": "high"}, "message": "bad log"}))
+    result = JsonExtractPreprocessor().process([line])[0]
+    assert result.level is None
+
+
 def test_json_extract_marks_metadata():
     line = _line(_j({"message": "ok"}))
     assert JsonExtractPreprocessor().process([line])[0].metadata.get("json_parsed") is True
