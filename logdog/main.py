@@ -31,6 +31,7 @@ from logdog.collector.log_stream import (
     run_alert_once,
 )
 from logdog.pipeline.cooldown import CooldownStore
+from logdog.pipeline.preprocessor.loader import load_preprocessors
 from logdog.core.config import (
     expand_effective_hosts,
     load_app_config,
@@ -740,6 +741,9 @@ def create_app(
                 "prompt_template": str(host.get("prompt_template") or "default_alert"),
                 "output_template": str(host.get("output_template") or "standard"),
                 "config": host,
+                "preprocessors": load_preprocessors(
+                    builtin_configs=_resolve_host_preprocessor_configs(host)
+                ),
             }
             if storm_controller is not None:
                 watcher_kwargs["storm_controller"] = storm_controller
@@ -1279,6 +1283,14 @@ def create_app(
     mount_frontend(app)
 
     return app
+
+
+def _resolve_host_preprocessor_configs(host: dict[str, Any]) -> list[dict[str, Any]]:
+    """Extract the per-host preprocessors list from the host config dict."""
+    raw = host.get("preprocessors")
+    if not isinstance(raw, list):
+        return []
+    return [item for item in raw if isinstance(item, dict)]
 
 
 def _resolve_app_config(
