@@ -285,7 +285,7 @@ hosts:
   #
   #     # ── 容器级自定义 ──
   #     # 支持精确名称或通配符 (fnmatch)
-  #     # 每个容器可独立设置提示词、输出格式、告警规则
+  #     # 每个容器可独立设置: 提示词、输出格式、告警规则、LLM 模型
   #     overrides:
   #       api:
   #         prompt_template: api_alert      # api 用专属提示词
@@ -293,6 +293,8 @@ hosts:
   #         rules:
   #           alert_keywords: [error, fatal, "5xx", timeout]
   #           ignore: ["health.?check", "GET /ping"]
+  #         llm:
+  #           model: "openai:gpt-4o"        # api 容器用高质量模型分析
   #
   #       "worker-*":                       # 所有 worker 容器
   #         prompt_template: worker_alert
@@ -300,11 +302,15 @@ hosts:
   #         rules:
   #           alert_keywords: [error, fatal, oom]
   #           ignore: ["retry succeeded"]
+  #         llm:
+  #           model: "openai:gpt-4o-mini"   # worker 用低成本模型
   #
   #       redis:
   #         rules:
   #           alert_keywords: [error, oom, "maxmemory"]
   #           ignore: ["Saving RDB", "Background saving"]
+  #         llm:
+  #           enabled: false                # redis 不用 LLM 分析
 
   # ── 测试环境 ──
   # - name: staging
