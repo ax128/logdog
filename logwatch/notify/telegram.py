@@ -23,9 +23,14 @@ from logwatch.notify.base import (
 )
 
 
-SendFunc = Callable[[str, str], Awaitable[None]]
+SendFunc = Callable[..., Awaitable[None] | None]
 logger = logging.getLogger(__name__)
 TELEGRAM_AUTO_TARGET = "__auto__"
+TELEGRAM_BOT_COMMANDS = [
+    {"command": "msg", "description": "Switch message mode (text|txt|md|doc)"},
+    {"command": "help", "description": "Show help"},
+    {"command": "status", "description": "Show system status"},
+]
 _AUTO_TARGET_ATTR = "_logwatch_supports_auto_target"
 _STREAM_EDIT_MIN_INTERVAL_SEC = 0.35
 
@@ -409,8 +414,8 @@ def build_telegram_bot_token_sender(
         auto_chat_cache_ttl_seconds=auto_chat_cache_ttl_seconds,
     )
 
-    def send_func(target: str, message: str) -> None:
-        sender.send(target, message)
+    def send_func(target: str, message: str, parse_mode: str = "") -> None:
+        sender.send(target, message, parse_mode=parse_mode)
 
     setattr(send_func, _AUTO_TARGET_ATTR, True)
     return send_func
@@ -442,8 +447,11 @@ class TelegramNotifier(BaseNotifier):
             host=host,
             category=category,
         )
+        parse_mode = "Markdown" if mode in ("md", "doc") else ""
         for chunk in split_message(formatted, self.max_message_chars):
-            await self._send_func(host, chunk)
+            result = self._send_func(host, chunk, parse_mode)
+            if inspect.isawaitable(result):
+                await result
 
 
 class TelegramBotRuntime:
@@ -461,7 +469,12 @@ class TelegramBotRuntime:
         self._authorized_user_ids = {str(item).strip() for item in authorized_user_ids}
         self._message_mode_setter = message_mode_setter
         self._message_mode_getter = message_mode_getter
+        self._sender: Any | None = None
         self._started = False
+
+    def set_sender(self, sender: Any) -> None:
+        """Attach a TelegramBotTokenSender for typing indicators and file operations."""
+        self._sender = sender
 
     async def start(self) -> None:
         if self._started:
@@ -479,6 +492,7 @@ class TelegramBotRuntime:
                 await updater.start_polling()
                 polling_started = True
             self._started = True
+            self._register_bot_commands()
         except Exception:
             if polling_started and updater is not None and hasattr(updater, "stop"):
                 try:
@@ -530,6 +544,12 @@ class TelegramBotRuntime:
 
         if await self._handle_message_mode_command(text=text, reply_text=reply_text):
             return True
+
+        if self._sender is not None:
+            try:
+                self._sender.send_chat_action(chat_id)
+            except Exception:
+                logger.debug("send_chat_action failed", exc_info=True)
 
         try:
             reply = self._chat_runtime.invoke_text(
@@ -589,6 +609,14 @@ class TelegramBotRuntime:
         )
         return True
 
+    def _register_bot_commands(self) -> None:
+        if self._sender is None:
+            return
+        try:
+            self._sender.set_my_commands(TELEGRAM_BOT_COMMANDS)
+        except Exception:
+            logger.warning("telegram bot command registration failed", exc_info=True)
+
     def _resolve_current_message_mode(self) -> str:
         if self._message_mode_getter is None:
             return normalize_message_mode(None)
@@ -630,8 +658,13 @@ def build_telegram_bot_runtime(
         message = getattr(update, "effective_message", None)
         user = getattr(update, "effective_user", None)
         chat = getattr(update, "effective_chat", None)
-        text = getattr(message, "text", None)
-        if message is None or user is None or chat is None or not isinstance(text, str):
+        if message is None or user is None or chat is None:
+            return
+        text = getattr(message, "text", None) or getattr(message, "caption", None) or ""
+        if not isinstance(text, str):
+            return
+        document = getattr(message, "document", None)
+        if not text and document is None:
             return
         await runtime.handle_text_message(
             user_id=str(getattr(user, "id", "")),

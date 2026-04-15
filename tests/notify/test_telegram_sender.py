@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 import pytest
 
-from logwatch.notify.telegram import TelegramBotTokenSender
+from logwatch.notify.telegram import TelegramBotTokenSender, TelegramNotifier
 
 
 def _make_sender() -> TelegramBotTokenSender:
@@ -250,3 +250,35 @@ class TestSendDelegatesToSendMessage:
         sender.send_message = fake_send_message  # type: ignore[assignment]
         sender.send("456", "hi there")
         assert sm_calls == [("456", "hi there", "")]
+
+
+class TestNotifierParseMode:
+    @pytest.mark.asyncio
+    async def test_notifier_sends_markdown_parse_mode_in_md_mode(self) -> None:
+        calls: list[tuple[str, str, str]] = []
+
+        def fake_send(target: str, chunk: str, parse_mode: str) -> None:
+            calls.append((target, chunk, parse_mode))
+
+        notifier = TelegramNotifier(
+            fake_send,
+            message_mode_getter=lambda: "md",
+        )
+        await notifier.send("host1", "hello", "general")
+        assert len(calls) >= 1
+        assert calls[0][2] == "Markdown"
+
+    @pytest.mark.asyncio
+    async def test_notifier_sends_empty_parse_mode_in_text_mode(self) -> None:
+        calls: list[tuple[str, str, str]] = []
+
+        def fake_send(target: str, chunk: str, parse_mode: str) -> None:
+            calls.append((target, chunk, parse_mode))
+
+        notifier = TelegramNotifier(
+            fake_send,
+            message_mode_getter=lambda: "text",
+        )
+        await notifier.send("host1", "hello", "general")
+        assert len(calls) >= 1
+        assert calls[0][2] == ""

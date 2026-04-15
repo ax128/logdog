@@ -4,7 +4,7 @@ from collections.abc import Awaitable, Callable
 
 import pytest
 
-from logwatch.notify.telegram import build_telegram_bot_runtime
+from logwatch.notify.telegram import build_telegram_bot_runtime, TELEGRAM_BOT_COMMANDS
 
 
 class _FakeUpdater:
@@ -205,5 +205,128 @@ async def test_telegram_runtime_supports_msg_command_for_hot_mode_switch() -> No
     assert update_help.effective_message.replies
     assert "txt" in update_help.effective_message.replies[0]
     assert "doc" in update_help.effective_message.replies[0]
+
+    await runtime.shutdown()
+
+
+class _FakeSender:
+    def __init__(self) -> None:
+        self.chat_action_calls: list[str] = []
+        self.set_commands_calls: list[list[dict[str, str]]] = []
+
+    def send_chat_action(self, chat_id: str, action: str = "typing") -> None:
+        self.chat_action_calls.append(chat_id)
+
+    def set_my_commands(self, commands: list[dict[str, str]]) -> None:
+        self.set_commands_calls.append(commands)
+
+
+class _FakeMessageWithCaption:
+    def __init__(self, *, text: str | None = None, caption: str | None = None, document: object | None = None) -> None:
+        self.text = text
+        self.caption = caption
+        self.document = document
+        self.replies: list[str] = []
+
+    async def reply_text(self, text: str) -> None:
+        self.replies.append(text)
+
+
+class _FakeUpdateWithCaption:
+    def __init__(self, *, user_id: int, chat_id: int, text: str | None = None, caption: str | None = None, document: object | None = None) -> None:
+        self.effective_user = type("User", (), {"id": user_id})()
+        self.effective_chat = type("Chat", (), {"id": chat_id})()
+        self.effective_message = _FakeMessageWithCaption(text=text, caption=caption, document=document)
+
+
+@pytest.mark.asyncio
+async def test_typing_indicator_sent_before_reply() -> None:
+    events: list[str] = []
+    application = _FakeApplication(events)
+    chat_runtime = _RecordingChatRuntime()
+    sender = _FakeSender()
+
+    runtime = build_telegram_bot_runtime(
+        bot_token="token",
+        chat_runtime=chat_runtime,
+        authorized_user_ids={"42"},
+        application_factory=lambda _token: application,
+        handler_binder=lambda app, handler: app.add_handler(handler),
+    )
+
+    assert runtime is not None
+    runtime.set_sender(sender)
+    await runtime.start()
+
+    handler = application.handlers[0]
+    update = _FakeUpdate(user_id=42, chat_id=9001, text="ping")
+    await handler(update, None)
+
+    assert sender.chat_action_calls == ["9001"]
+    assert update.effective_message.replies == ["agent::ping"]
+
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_file_message_with_caption_is_handled() -> None:
+    events: list[str] = []
+    application = _FakeApplication(events)
+    chat_runtime = _RecordingChatRuntime()
+
+    runtime = build_telegram_bot_runtime(
+        bot_token="token",
+        chat_runtime=chat_runtime,
+        authorized_user_ids={"42"},
+        application_factory=lambda _token: application,
+        handler_binder=lambda app, handler: app.add_handler(handler),
+    )
+
+    assert runtime is not None
+    await runtime.start()
+
+    handler = application.handlers[0]
+    update = _FakeUpdateWithCaption(
+        user_id=42,
+        chat_id=9001,
+        caption="describe this file",
+        document=object(),
+    )
+    await handler(update, None)
+
+    assert chat_runtime.calls == [
+        {
+            "prompt": "describe this file",
+            "user_id": "42",
+            "session_key": "telegram:9001",
+            "fallback": "Agent unavailable right now. Please try again shortly.",
+        }
+    ]
+    assert update.effective_message.replies == ["agent::describe this file"]
+
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_bot_commands_registered_on_start_when_sender_set() -> None:
+    events: list[str] = []
+    application = _FakeApplication(events)
+    chat_runtime = _RecordingChatRuntime()
+    sender = _FakeSender()
+
+    runtime = build_telegram_bot_runtime(
+        bot_token="token",
+        chat_runtime=chat_runtime,
+        authorized_user_ids={"42"},
+        application_factory=lambda _token: application,
+        handler_binder=lambda app, handler: app.add_handler(handler),
+    )
+
+    assert runtime is not None
+    runtime.set_sender(sender)
+    await runtime.start()
+
+    assert len(sender.set_commands_calls) == 1
+    assert sender.set_commands_calls[0] == TELEGRAM_BOT_COMMANDS
 
     await runtime.shutdown()
