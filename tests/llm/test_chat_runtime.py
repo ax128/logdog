@@ -17,7 +17,8 @@ class _RecordingAgent:
         self, payload: dict[str, Any], config: dict[str, Any] | None = None
     ) -> dict[str, str]:
         self.calls.append({"payload": payload, "config": config})
-        return {"output": f"agent::{payload['input']}"}
+        content = payload["messages"][0].content if "messages" in payload else payload["input"]
+        return {"output": f"agent::{content}"}
 
 
 def test_chat_runtime_builds_with_registry_tools_and_stable_thread_id() -> None:
@@ -106,3 +107,21 @@ def test_chat_runtime_returns_bounded_fallback_when_agent_raises() -> None:
 
     assert out == DEFAULT_CHAT_FALLBACK_MESSAGE
     assert len(out) <= 120
+
+
+def test_wrap_registered_tool_uses_lc_tool_with_schema() -> None:
+    """Verify wrapping produces a LangChain tool with args_schema from TOOL_META."""
+    from logwatch.llm.agent_runtime import _wrap_registered_tool
+
+    class _FakeTool:
+        name = "list_containers"
+        description = "List containers for a host."
+        read_only = True
+
+        async def invoke(self, *, user_id: str, arguments: dict) -> dict:
+            return {"containers": []}
+
+    wrapped = _wrap_registered_tool(_FakeTool())
+    assert wrapped.name == "list_containers"
+    assert wrapped.args_schema is not None
+    assert "host" in wrapped.args_schema.model_fields

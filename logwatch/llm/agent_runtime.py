@@ -274,22 +274,61 @@ def _is_registered_agent_tool(tool: Any) -> bool:
 
 
 def _wrap_registered_tool(tool: Any) -> Any:
-    from langchain_core.tools import StructuredTool
+    import asyncio
+    import concurrent.futures
 
-    async def _tool(**kwargs: Any) -> Any:
+    from logwatch.llm.tool_defs import TOOL_METAS, build_args_schema
+
+    name = str(getattr(tool, "name", "logwatch_tool"))
+    description = str(getattr(tool, "description", name))
+
+    # Build args_schema from TOOL_META if available
+    meta = TOOL_METAS.get(name)
+    args_schema = None
+    if meta is not None:
+        args_schema = build_args_schema(name, meta.get("parameters", {}))
+
+    async def _atool(**kwargs: Any) -> Any:
         return await tool.invoke(
             user_id=_CURRENT_RUNTIME_USER_ID.get(),
             arguments=kwargs,
         )
 
-    name = str(getattr(tool, "name", "logwatch_tool"))
-    description = str(getattr(tool, "description", name))
+    def _tool(**kwargs: Any) -> Any:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if loop is not None and loop.is_running():
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                return pool.submit(asyncio.run, _atool(**kwargs)).result()
+        return asyncio.run(_atool(**kwargs))
 
-    return StructuredTool.from_function(
-        coroutine=_tool,
-        name=name,
-        description=description,
-    )
+    _tool.__name__ = name
+    _tool.__doc__ = description
+
+    try:
+        from langchain_core.tools import tool as lc_tool
+
+        wrapped = (
+            lc_tool(args_schema=args_schema)(_tool)
+            if args_schema is not None
+            else lc_tool(_tool)
+        )
+        wrapped.handle_tool_error = True
+        return wrapped
+    except ImportError:
+        from langchain_core.tools import StructuredTool
+
+        st_kwargs: dict[str, Any] = {
+            "func": _tool,
+            "coroutine": _atool,
+            "name": name,
+            "description": description,
+        }
+        if args_schema is not None:
+            st_kwargs["args_schema"] = args_schema
+        return StructuredTool.from_function(**st_kwargs)
 
 
 def _build_checkpointer(

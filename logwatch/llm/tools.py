@@ -573,7 +573,7 @@ def create_tool_registry(
         ),
         "list_containers": AgentTool(
             name="list_containers",
-            description="List containers for a host. Required param: host (string, e.g. 'local' or 'prod').",
+            description="List containers for a host.",
             read_only=True,
             _invoke=lambda user_id, arguments: guarded_invoke(
                 "list_containers",
@@ -585,7 +585,7 @@ def create_tool_registry(
         ),
         "query_logs": AgentTool(
             name="query_logs",
-            description="Query recent container logs. Required params: host (string, e.g. 'local' or 'prod'), container_id (string, container name or id). Optional: hours (int, default 1), max_lines (int).",
+            description="Query recent container logs.",
             read_only=True,
             _invoke=lambda user_id, arguments: guarded_invoke(
                 "query_logs",
@@ -597,7 +597,7 @@ def create_tool_registry(
         ),
         "get_metrics": AgentTool(
             name="get_metrics",
-            description="Query container metrics from storage. Required params: host (string), container_id (string). Optional: hours (int, default 1).",
+            description="Query container metrics from storage.",
             read_only=True,
             _invoke=lambda user_id, arguments: guarded_invoke(
                 "get_metrics",
@@ -609,7 +609,7 @@ def create_tool_registry(
         ),
         "get_alerts": AgentTool(
             name="get_alerts",
-            description="List recent stored alerts. Optional params: host (string), hours (int, default 24), limit (int).",
+            description="List recent stored alerts.",
             read_only=True,
             _invoke=lambda user_id, arguments: guarded_invoke(
                 "get_alerts",
@@ -621,7 +621,7 @@ def create_tool_registry(
         ),
         "mute_alert": AgentTool(
             name="mute_alert",
-            description="Create an alert mute entry",
+            description="Create an alert mute entry.",
             read_only=False,
             _invoke=lambda user_id, arguments: guarded_invoke(
                 "mute_alert",
@@ -633,7 +633,7 @@ def create_tool_registry(
         ),
         "unmute_alert": AgentTool(
             name="unmute_alert",
-            description="Remove an alert mute entry",
+            description="Remove an alert mute entry.",
             read_only=False,
             _invoke=lambda user_id, arguments: guarded_invoke(
                 "unmute_alert",
@@ -645,7 +645,7 @@ def create_tool_registry(
         ),
         "restart_container": AgentTool(
             name="restart_container",
-            description="Restart a container on an allowlisted host",
+            description="Restart a container on an allowlisted host.",
             read_only=False,
             _invoke=lambda user_id, arguments: guarded_invoke(
                 "restart_container",
