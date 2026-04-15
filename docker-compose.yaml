@@ -9,6 +9,6 @@ services:
       - ./config:/app/config:ro
       - ./data:/app/data
       - /var/run/docker.sock:/var/run/docker.sock
-      - ~/.ssh/id_ed25519:/root/.ssh/id_ed25519:ro
+      - /home/yz/.ssh/id_ed25519:/root/.ssh/id_ed25519:ro
     env_file:
       - .env

@@ -5,6 +5,7 @@ import importlib
 import threading
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, AsyncIterator, cast
 
 
@@ -727,6 +728,31 @@ def _fetch_stats_operation(container_id: str):
     return operation
 
 
+def _coerce_docker_time(value: Any) -> datetime | int | float | None:
+    """Convert string timestamps to datetime for Docker SDK compatibility."""
+    if value is None:
+        return None
+    if isinstance(value, (int, float, datetime)):
+        return value
+    s = str(value).strip()
+    if not s:
+        return None
+    # Unix timestamp as string
+    try:
+        return float(s)
+    except ValueError:
+        pass
+    # ISO 8601 string
+    try:
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except ValueError:
+        pass
+    return None
+
+
 def _query_logs_operation(
     container_id: str,
     *,
@@ -744,10 +770,12 @@ def _query_logs_operation(
             "timestamps": True,
             "tail": tail,
         }
-        if since is not None:
-            kwargs["since"] = since
-        if until is not None:
-            kwargs["until"] = until
+        coerced_since = _coerce_docker_time(since)
+        coerced_until = _coerce_docker_time(until)
+        if coerced_since is not None:
+            kwargs["since"] = coerced_since
+        if coerced_until is not None:
+            kwargs["until"] = coerced_until
         return _normalize_log_entries(container_obj.logs(**kwargs))
 
     return operation
@@ -772,8 +800,9 @@ def _stream_logs_operation(
             "stderr": True,
             "timestamps": True,
         }
-        if since is not None:
-            kwargs["since"] = since
+        coerced_since = _coerce_docker_time(since)
+        if coerced_since is not None:
+            kwargs["since"] = coerced_since
         if validated_tail is not None:
             kwargs["tail"] = validated_tail
         return _BufferedLogStreamIterator(container_obj.logs(**kwargs))
