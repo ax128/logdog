@@ -34,7 +34,7 @@ class _FakeContainersApi:
 
 
 class _FakeDockerClient:
-    def __init__(self, *, base_url: str, use_ssh_client: bool = False):
+    def __init__(self, *, base_url: str, use_ssh_client: bool = False, timeout: int | None = None):
         self.base_url = base_url
         self.use_ssh_client = use_ssh_client
         self.containers = _FakeContainersApi(
@@ -64,7 +64,7 @@ class _FakeDockerModule:
 class _PoolFakeDockerClient(_FakeDockerClient):
     created: list["_PoolFakeDockerClient"] = []
 
-    def __init__(self, *, base_url: str, use_ssh_client: bool = False):
+    def __init__(self, *, base_url: str, use_ssh_client: bool = False, timeout: int | None = None):
         super().__init__(base_url=base_url, use_ssh_client=use_ssh_client)
         type(self).created.append(self)
 
@@ -76,7 +76,7 @@ class _PoolFakeDockerModule:
 class _HealthFakeDockerClient(_FakeDockerClient):
     created: list["_HealthFakeDockerClient"] = []
 
-    def __init__(self, *, base_url: str, use_ssh_client: bool = False):
+    def __init__(self, *, base_url: str, use_ssh_client: bool = False, timeout: int | None = None):
         super().__init__(base_url=base_url, use_ssh_client=use_ssh_client)
         self.fail_health = False
         self.close_calls = 0

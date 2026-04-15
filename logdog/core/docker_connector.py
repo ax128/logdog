@@ -597,6 +597,9 @@ def _load_docker_module() -> Any:
         raise RuntimeError("docker SDK is not available") from exc
 
 
+_DEFAULT_SSH_TIMEOUT = 15  # seconds
+
+
 def _docker_client_kwargs(host: dict[str, Any]) -> dict[str, Any]:
     url = str(host.get("url") or "").strip()
     if url == "":
@@ -604,6 +607,7 @@ def _docker_client_kwargs(host: dict[str, Any]) -> dict[str, Any]:
     kwargs: dict[str, Any] = {"base_url": url}
     if url.startswith("ssh://"):
         kwargs["use_ssh_client"] = True
+        kwargs["timeout"] = _DEFAULT_SSH_TIMEOUT
         ssh_key = str(host.get("ssh_key") or "").strip()
         if ssh_key:
             # Private key: not forwarded to DockerClient directly; used by
