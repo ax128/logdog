@@ -80,9 +80,7 @@ def _resolve_one(
     cls = registry.get(name)
     if cls is not None:
         try:
-            p = cls(config=cfg)
-            p.on_load()
-            return p
+            return _initialize_preprocessor(cls(config=cfg))
         except Exception as exc:  # noqa: BLE001
             logger.warning("failed to init built-in preprocessor %r: %s", name, exc)
             return None
