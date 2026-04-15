@@ -79,12 +79,17 @@ TOOL_METAS: dict[str, dict[str, Any]] = {
     },
     "restart_container": {
         "name": "restart_container",
-        "description": "Restart a container on an allowlisted host.",
+        "description": "Restart a container on an allowlisted host. Requires confirmed=true.",
         "read_only": False,
         "parameters": {
             "host": {"type": "string", "description": "Host name, e.g. 'local' or 'prod'", "required": True},
             "container_id": {"type": "string", "description": "Container name or id", "required": True},
             "timeout": {"type": "integer", "description": "Restart timeout seconds", "required": False, "default": 10},
+            "confirmed": {
+                "type": "boolean",
+                "description": "Must be true to confirm restart execution",
+                "required": True,
+            },
         },
     },
 }
