@@ -764,8 +764,16 @@ def _fetch_stats_operation(container_id: str):
 def _coerce_docker_time(value: Any) -> Any:
     """Convert string timestamps to datetime for Docker SDK compatibility.
 
-    Returns datetime for ISO 8601 strings, float for numeric strings,
-    and the original value unchanged for anything else (including None).
+    - None → None
+    - int/float/datetime → unchanged
+    - empty string → None (Docker SDK rejects empty strings)
+    - numeric string (e.g. "1713000000") → float
+    - ISO 8601 string (e.g. "2026-04-11T10:00:00Z") → timezone-aware datetime
+    - anything else → passed through unchanged (Docker SDK will validate)
+
+    Note: Docker SDK's ``timeout`` for SSH connections affects socket read
+    timeouts via requests, not the TCP/SSH handshake; paramiko handles the
+    connection-level timeout separately via its own socket settings.
     """
     if value is None or isinstance(value, (int, float, datetime)):
         return value

@@ -2513,6 +2513,14 @@ def _load_persisted_authorized_users() -> set[str]:
 
 
 def _persist_authorized_user(user_id: str) -> None:
+    """Append user_id to the authorized-users state file using an atomic replace.
+
+    Called at most once per process lifetime (auto-authorize fires only for the
+    first message when the authorized set is empty), so no concurrent-write guard
+    is needed beyond the atomic os.replace.
+    """
+    import tempfile
+
     try:
         path = Path(_AUTHORIZED_USERS_STATE_FILE)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -2521,7 +2529,20 @@ def _persist_authorized_user(user_id: str) -> None:
             existing = json.loads(path.read_text()).get("telegram", [])
         if user_id not in existing:
             existing.append(user_id)
-        path.write_text(json.dumps({"telegram": existing}, indent=2))
+        content = json.dumps({"telegram": existing}, indent=2)
+        # Write to a temp file in the same directory, then atomically replace
+        # the target to avoid partial writes on crash.
+        fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w") as f:
+                f.write(content)
+            os.replace(tmp, path)
+        except Exception:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
         logger.info("persisted authorized Telegram user %s to %s", user_id, path)
     except Exception:  # noqa: BLE001
         logger.warning("failed to persist authorized user", exc_info=True)

@@ -18,7 +18,7 @@ from logdog.core.docker_connector import (
     query_container_logs,
     restart_container_for_host,
 )
-from logdog.llm.permissions import ensure_tool_allowed, load_permission_policy
+from logdog.llm.permissions import ensure_tool_allowed, has_explicit_confirmation, load_permission_policy
 
 
 logger = logging.getLogger(__name__)
@@ -620,7 +620,7 @@ def create_tool_registry(
     async def restart_container_handler(
         arguments: dict[str, Any], _writer: Any
     ) -> ToolResult:
-        if not bool(arguments.get("confirmed")):
+        if not has_explicit_confirmation(arguments, policy=permission_policy):
             raise ValueError("confirmed must be True to execute restart")
         host = _require_host_config(host_manager, arguments)
         container_id = _require_non_empty_str(
@@ -681,8 +681,10 @@ def create_tool_registry(
     async def exec_container_handler(
         arguments: dict[str, Any], _writer: Any
     ) -> ToolResult:
-        # Permission layer already verifies confirmed; this is a defence-in-depth guard.
-        if not bool(arguments.get("confirmed")):
+        # Defence-in-depth: permission layer already checks confirmed, but we
+        # mirror its acceptance set (bool True or truthy string) so both layers
+        # agree on what counts as confirmed.
+        if not has_explicit_confirmation(arguments, policy=permission_policy):
             raise ValueError("confirmed must be True to execute exec_container")
         host = _require_host_config(host_manager, arguments)
         container_id = _require_non_empty_str(

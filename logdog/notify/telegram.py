@@ -548,6 +548,9 @@ class TelegramBotRuntime:
         normalized_user_id = str(user_id).strip()
         if normalized_user_id not in self._authorized_user_ids:
             if self._auto_authorize and normalized_user_id:
+                # python-telegram-bot dispatches updates serially on a single asyncio
+                # event loop, so this check-then-set is safe in the standard deployment.
+                # Multi-process deployments would need an external lock here.
                 self._authorized_user_ids.add(normalized_user_id)
                 self._auto_authorize = False
                 logger.info("auto-authorized first Telegram user: %s", normalized_user_id)
@@ -555,7 +558,12 @@ class TelegramBotRuntime:
                     try:
                         self._on_new_authorized_user(normalized_user_id)
                     except Exception:  # noqa: BLE001
-                        logger.warning("failed to persist authorized user id", exc_info=True)
+                        logger.warning(
+                            "failed to persist authorized user %s — user is authorized "
+                            "this session but will need to message again after restart",
+                            normalized_user_id,
+                            exc_info=True,
+                        )
             else:
                 return False
 
