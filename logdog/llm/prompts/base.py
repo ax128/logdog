@@ -10,12 +10,22 @@ REQUIRED_VARS_BY_SCENE: dict[str, set[str]] = {
     "hourly": {"host_name", "container_name", "timestamp", "logs", "metrics"},
     "daily": {"host_name", "timestamp", "alert_history", "metrics"},
     "heartbeat": {"host_name", "timestamp", "container_status", "total_containers"},
+    # --- new scenes ---
+    # Container crash / OOM / non-zero exit
+    "crash": {"host_name", "container_name", "timestamp", "logs", "exit_code", "restart_count"},
+    # Security-related log events (auth failures, privilege escalation, etc.)
+    "security": {"host_name", "container_name", "timestamp", "logs"},
+    # Post-deployment health validation
+    "deployment": {"host_name", "container_name", "timestamp", "logs", "image_tag"},
 }
 ALLOW_EMPTY_COLLECTIONS_BY_SCENE: dict[str, set[str]] = {
     "interval": {"logs", "metrics"},
     "hourly": {"logs", "metrics"},
     "daily": {"alert_history", "metrics"},
     "heartbeat": {"container_status"},
+    "crash": {"logs"},
+    "security": {"logs"},
+    "deployment": {"logs"},
 }
 
 

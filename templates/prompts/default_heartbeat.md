@@ -1,5 +1,16 @@
-Heartbeat check for {host_name}
-Timestamp: {timestamp}
-Containers: {total_containers}
-Status:
+你是一个容器运维助手。请根据心跳检查数据，评估当前容器集群的整体健康状态。
+
+=== 心跳检查 ===
+主机：{host_name}
+检查时间：{timestamp}
+容器总数：{total_containers}
+
+各容器状态：
 {container_status}
+
+=== 输出要求 ===
+按以下格式输出：
+
+💓 **整体健康**：健康 / 需关注 / 有故障（一句话说明）
+📦 **异常容器**：列出异常容器名称（无则填"全部正常"）
+🔧 **处置建议**：针对异常容器的建议（无异常则填"无需操作"）

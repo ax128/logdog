@@ -14,24 +14,50 @@ from logdog.llm.prompts.base import (
 PROMPTS_DIR = Path(__file__).resolve().parents[3] / "templates" / "prompts"
 _VALID_TEMPLATE_NAME = re.compile(r"^[a-z0-9_]+$")
 _PROMPT_ALIASES = {
+    # alert scene
     "default": "default_alert",
     "alert": "default_alert",
     "default_alert": "default_alert",
+    "alert_brief": "alert_brief",
+    "alert_detailed": "alert_detailed",
+    "alert_security": "alert_security",
+    # interval scene
     "interval": "default_interval",
     "default_interval": "default_interval",
+    # hourly scene
     "hourly": "default_hourly",
     "default_hourly": "default_hourly",
+    # daily scene
     "daily": "default_daily",
     "default_daily": "default_daily",
+    "daily_executive": "daily_executive",
+    "daily_ops": "daily_ops",
+    # heartbeat scene
     "heartbeat": "default_heartbeat",
     "default_heartbeat": "default_heartbeat",
+    # crash scene (new)
+    "crash": "crash_analysis",
+    "crash_analysis": "crash_analysis",
+    # security scene (new)
+    "security": "alert_security",
+    # deployment scene (new)
+    "deployment": "deployment_check",
+    "deployment_check": "deployment_check",
 }
 _BUILTIN_TEMPLATE_TEXTS = {
-    "default_alert": "Host: {host_name}\nContainer: {container_name}\nTimestamp: {timestamp}\n{logs}",
-    "default_interval": "Interval summary for {host_name}/{container_name}\nTimestamp: {timestamp}\nLogs:\n{logs}\nMetrics:\n{metrics}",
-    "default_hourly": "Hourly summary for {host_name}/{container_name}\nTimestamp: {timestamp}\nLogs:\n{logs}\nMetrics:\n{metrics}",
-    "default_daily": "Daily summary for {host_name}\nTimestamp: {timestamp}\nAlert history:\n{alert_history}\nMetrics:\n{metrics}",
-    "default_heartbeat": "Heartbeat check for {host_name}\nTimestamp: {timestamp}\nContainers: {total_containers}\nStatus:\n{container_status}",
+    # Minimal one-liner fallbacks used when the .md file is missing.
+    "default_alert": "主机: {host_name} | 容器: {container_name} | 时间: {timestamp}\n{logs}",
+    "alert_brief": "主机: {host_name} | 容器: {container_name} | 时间: {timestamp}\n{logs}\n请用3行给出诊断：🚨现象 / 📍原因 / 🔧建议",
+    "alert_detailed": "主机: {host_name} | 容器: {container_name} | 时间: {timestamp}\n{logs}\n请给出详细根因分析和处置方案。",
+    "alert_security": "主机: {host_name} | 容器: {container_name} | 时间: {timestamp}\n{logs}\n请分析安全威胁并给出处置建议。",
+    "default_interval": "周期检查 {host_name}/{container_name} 时间: {timestamp}\n日志:\n{logs}\n指标:\n{metrics}",
+    "default_hourly": "小时摘要 {host_name}/{container_name} 时间: {timestamp}\n日志:\n{logs}\n指标:\n{metrics}",
+    "default_daily": "每日摘要 {host_name} 日期: {timestamp}\n告警历史:\n{alert_history}\n性能指标:\n{metrics}",
+    "daily_executive": "主机: {host_name} 日期: {timestamp}\n告警: {alert_history}\n指标: {metrics}\n请生成管理层日报摘要（150字以内）。",
+    "daily_ops": "主机: {host_name} 日期: {timestamp}\n告警: {alert_history}\n指标: {metrics}\n请生成运维日报，按容器分析。",
+    "default_heartbeat": "心跳检查 {host_name} 时间: {timestamp} 容器数: {total_containers}\n{container_status}",
+    "crash_analysis": "主机: {host_name} | 容器: {container_name} | 时间: {timestamp}\n退出码: {exit_code} | 重启次数: {restart_count}\n{logs}\n请分析崩溃原因并给出修复建议。",
+    "deployment_check": "主机: {host_name} | 容器: {container_name} | 时间: {timestamp}\n镜像: {image_tag}\n{logs}\n请评估部署结果是否成功。",
 }
 
 
