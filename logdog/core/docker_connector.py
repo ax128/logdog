@@ -377,7 +377,10 @@ class DockerClientPool:
 
     async def _run(self, host: dict[str, Any], operation: Any) -> Any:
         client = await self._get_client(host)
-        return await self._to_thread(lambda: operation(client))
+        return await asyncio.wait_for(
+            self._to_thread(lambda: operation(client)),
+            timeout=_DEFAULT_SSH_TIMEOUT,
+        )
 
     async def _open_stream(self, host: dict[str, Any], operation: Any) -> _StreamHandle:
         stream = await _open_stream_handle(
@@ -427,7 +430,10 @@ class DockerClientPool:
         await self._enforce_capacity_locked()
 
         docker_module = self._module_loader()
-        client = await self._to_thread(lambda: _make_docker_client(docker_module, kwargs))
+        client = await asyncio.wait_for(
+            self._to_thread(lambda: _make_docker_client(docker_module, kwargs)),
+            timeout=_DEFAULT_SSH_TIMEOUT,
+        )
         entry = _PooledClient(kwargs=kwargs, client=client, last_used_at=now)
         self._clients[key] = entry
         return entry
