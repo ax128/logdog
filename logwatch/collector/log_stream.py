@@ -812,7 +812,14 @@ class LogStreamWatcher:
                         )
             except asyncio.CancelledError:
                 raise
-            except Exception:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001
+                if _is_container_gone(exc):
+                    logger.warning(
+                        "container gone, stopping watcher host=%s container=%s",
+                        host_name,
+                        container_name,
+                    )
+                    return
                 if not managed_mode:
                     raise
                 logger.exception(
@@ -1136,7 +1143,9 @@ async def _emit_storm_message(
     payload.update(dict(item.get("payload") or {}))
     saved = True
     try:
-        await save_impl(payload)
+        save_result = await save_impl(payload)
+        if save_result is False:
+            saved = False
     except Exception:  # noqa: BLE001
         logger.exception("storm save failed host=%s category=%s", host, category)
         saved = False
@@ -1299,3 +1308,16 @@ def _container_pattern_matches(pattern: Any, *, name: str, container_id: str) ->
     if text == "":
         return False
     return text in name or text in container_id
+
+
+def _is_container_gone(exc: BaseException) -> bool:
+    """Check if the exception indicates the container no longer exists."""
+    # docker.errors.NotFound (404)
+    cls_name = type(exc).__name__
+    if cls_name == "NotFound":
+        return True
+    # Walk the exception chain (e.g. raised ... from NotFound)
+    cause = exc.__cause__
+    if cause is not None and type(cause).__name__ == "NotFound":
+        return True
+    return False
