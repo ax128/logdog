@@ -6,6 +6,7 @@ import asyncio
 import inspect
 import threading
 from copy import deepcopy
+from fnmatch import fnmatch
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -692,6 +693,7 @@ class LogStreamWatcher:
             container.get("id") or container.get("container_id") or "container-unknown"
         )
         container_name = str(container.get("name") or container_id)
+        c_prompt, c_output, c_config = self._resolve_container_config(container_name)
         current_task = asyncio.current_task()
         managed_mode = (
             current_task is not None and current_task in self._container_tasks.values()
@@ -720,9 +722,9 @@ class LogStreamWatcher:
                             "save_alert": self._build_save_alert(),
                             "save_storm_event": self._build_save_storm_event(),
                             "mute_checker": self._build_mute_checker(),
-                            "prompt_template": self._prompt_template,
-                            "output_template": self._output_template,
-                            "config": self._alert_config,
+                            "prompt_template": c_prompt,
+                            "output_template": c_output,
+                            "config": c_config,
                         }
                         if self._storm_controller is not None:
                             alert_kwargs["storm_controller"] = self._storm_controller
@@ -779,6 +781,59 @@ class LogStreamWatcher:
                 return False
 
         return True
+
+    def _resolve_container_config(
+        self, container_name: str
+    ) -> tuple[str, str, dict[str, Any]]:
+        """Resolve prompt_template, output_template, and alert config for a container.
+
+        Checks containers.overrides for matching patterns (fnmatch).
+        Falls back to host-level defaults.
+        """
+        prompt = self._prompt_template
+        output = self._output_template
+        config = self._alert_config
+
+        containers_cfg = self._host.get("containers")
+        if not isinstance(containers_cfg, dict):
+            return prompt, output, config
+        overrides = containers_cfg.get("overrides")
+        if not isinstance(overrides, dict):
+            return prompt, output, config
+
+        # Find first matching override (fnmatch pattern)
+        matched: dict[str, Any] | None = None
+        for pattern, override_cfg in overrides.items():
+            if not isinstance(override_cfg, dict):
+                continue
+            if fnmatch(container_name, str(pattern)):
+                matched = override_cfg
+                break
+
+        if matched is None:
+            return prompt, output, config
+
+        if "prompt_template" in matched:
+            prompt = str(matched["prompt_template"])
+        if "output_template" in matched:
+            output = str(matched["output_template"])
+        if "rules" in matched:
+            # Merge: host rules as base, override rules on top
+            merged_config = deepcopy(config)
+            override_rules = matched["rules"]
+            if isinstance(override_rules, dict):
+                existing_rules = merged_config.get("rules") or {}
+                if not isinstance(existing_rules, dict):
+                    existing_rules = {}
+                merged_rules = dict(existing_rules)
+                # For list fields, override replaces
+                for key in ("ignore", "redact", "custom_alerts", "alert_keywords"):
+                    if key in override_rules:
+                        merged_rules[key] = override_rules[key]
+                merged_config["rules"] = merged_rules
+            config = merged_config
+
+        return prompt, output, config
 
     def _build_save_alert(self):
         if self._save_alert is not None:

@@ -418,6 +418,17 @@ def _merge_containers(
     if exclude or "exclude" in default_containers or "exclude" in host_containers:
         result["exclude"] = _copy_sequence(exclude)
 
+    # Preserve overrides (host overrides take precedence over defaults)
+    default_overrides = default_containers.get("overrides")
+    host_overrides = host_containers.get("overrides")
+    merged_overrides: dict = {}
+    if isinstance(default_overrides, dict):
+        merged_overrides.update(deepcopy(default_overrides))
+    if isinstance(host_overrides, dict):
+        merged_overrides.update(deepcopy(host_overrides))
+    if merged_overrides:
+        result["overrides"] = merged_overrides
+
     return result
 
 
