@@ -1,0 +1,62 @@
+from __future__ import annotations
+
+from logdog.pipeline.preprocessor.base import LogLine
+from logdog.pipeline.preprocessor.level_filter import LevelFilterPreprocessor
+
+
+def _line(content: str, level: str | None = None) -> LogLine:
+    return LogLine(
+        host_name="h", container_id="c", container_name="app",
+        timestamp="2026-04-15T10:00:00Z", content=content, level=level,
+    )
+
+
+def test_level_filter_empty():
+    assert LevelFilterPreprocessor().process([]) == []
+
+
+def test_level_filter_name():
+    assert LevelFilterPreprocessor.name == "level_filter"
+
+
+def test_level_filter_default_min_warn_drops_debug_info():
+    lines = [
+        _line("d", level="debug"),
+        _line("i", level="info"),
+        _line("w", level="warn"),
+        _line("e", level="error"),
+    ]
+    result = LevelFilterPreprocessor().process(lines)
+    assert [l.level for l in result] == ["warn", "error"]
+
+
+def test_level_filter_min_error_drops_warn():
+    lines = [_line("w", level="warn"), _line("e", level="error"), _line("f", level="fatal")]
+    result = LevelFilterPreprocessor(config={"min_level": "error"}).process(lines)
+    assert [l.level for l in result] == ["error", "fatal"]
+
+
+def test_level_filter_min_debug_keeps_all():
+    lines = [_line("x", level=lv) for lv in ["debug", "info", "warn", "error"]]
+    assert len(LevelFilterPreprocessor(config={"min_level": "debug"}).process(lines)) == 4
+
+
+def test_level_filter_unknown_level_kept_fail_open():
+    line = _line("something happened")   # no level, no keywords
+    assert LevelFilterPreprocessor(config={"min_level": "error"}).process([line]) == [line]
+
+
+def test_level_filter_detects_level_from_content():
+    lines = [_line("[DEBUG] boot"), _line("[WARN] disk high"), _line("[ERROR] conn refused")]
+    result = LevelFilterPreprocessor().process(lines)   # default min=warn
+    assert len(result) == 2
+    assert "WARN" in result[0].content
+
+def test_level_filter_warning_alias():
+    line = _line("msg", level="warning")
+    assert LevelFilterPreprocessor(config={"min_level": "warn"}).process([line]) == [line]
+
+
+def test_level_filter_panic_treated_as_fatal():
+    line = _line("panic: nil ptr", level="panic")
+    assert LevelFilterPreprocessor(config={"min_level": "error"}).process([line]) == [line]
