@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#08131d" />
+    <title>LogWatch Console</title>
+    <link rel="stylesheet" href="/static/app.css" />
+  </head>
+  <body>
+    <div class="page-shell">
+      <header class="hero panel">
+        <div class="hero-copy">
+          <p class="eyebrow">LogWatch Console</p>
+          <h1>Agent chat and fleet heartbeat in one calm screen.</h1>
+          <p class="hero-text">
+            Top half for host status overview and container quick-look. Bottom half for the
+            LogWatch agent conversation loop.
+          </p>
+        </div>
+
+        <form id="auth-form" class="auth-card" autocomplete="off">
+          <label class="field">
+            <span class="field-label">WEB_AUTH_TOKEN</span>
+            <input
+              id="token-input"
+              class="text-input"
+              type="password"
+              name="token"
+              placeholder="Paste bearer token"
+              spellcheck="false"
+            />
+          </label>
+
+          <div class="hero-actions">
+            <button class="primary-button" type="submit">Sync dashboard</button>
+            <button class="ghost-button" id="refresh-button" type="button">Refresh now</button>
+          </div>
+
+          <dl class="hint-grid">
+            <div>
+              <dt>REST</dt>
+              <dd>Authorization: Bearer &lt;token&gt;</dd>
+            </div>
+            <div>
+              <dt>WebSocket</dt>
+              <dd>POST /api/ws-ticket then /ws/chat?ticket=&lt;one-time-ticket&gt;</dd>
+            </div>
+          </dl>
+        </form>
+      </header>
+
+      <main class="dashboard">
+        <section class="status-overview panel" id="host-overview">
+          <div class="section-header">
+            <div>
+              <p class="section-kicker">Overview</p>
+              <h2>Host status overview</h2>
+            </div>
+            <p class="section-note" id="poll-status">Waiting for token</p>
+          </div>
+
+          <div class="metric-strip" aria-label="fleet summary">
+            <article class="metric-card">
+              <span class="metric-label">Hosts</span>
+              <strong class="metric-value" id="total-hosts">0</strong>
+            </article>
+            <article class="metric-card">
+              <span class="metric-label">Connected</span>
+              <strong class="metric-value" id="connected-hosts">0</strong>
+            </article>
+            <article class="metric-card">
+              <span class="metric-label">Selected host containers</span>
+              <strong class="metric-value" id="summary-selected-total">0</strong>
+            </article>
+            <article class="metric-card">
+              <span class="metric-label">Running now</span>
+              <strong class="metric-value" id="summary-running-total">0</strong>
+            </article>
+          </div>
+
+          <div class="overview-grid">
+            <section class="subpanel" aria-labelledby="hosts-title">
+              <div class="subpanel-header">
+                <h3 id="hosts-title">Hosts</h3>
+                <span class="subpanel-note">Click a host to inspect containers</span>
+              </div>
+              <div class="host-list" id="host-list"></div>
+            </section>
+
+            <section class="subpanel" aria-labelledby="containers-title">
+              <div class="subpanel-header">
+                <h3 id="containers-title">Container quick-look</h3>
+                <span class="subpanel-note" id="selected-host-label">No host selected</span>
+              </div>
+
+              <div class="table-shell">
+                <table class="container-table">
+                  <thead>
+                    <tr>
+                      <th scope="col">Container</th>
+                      <th scope="col">Status</th>
+                      <th scope="col">Restarts</th>
+                      <th scope="col">Identifier</th>
+                    </tr>
+                  </thead>
+                  <tbody id="container-table-body"></tbody>
+                </table>
+              </div>
+            </section>
+          </div>
+        </section>
+
+        <section class="chat-panel panel" id="chat-panel">
+          <div class="section-header">
+            <div>
+              <p class="section-kicker">Agent</p>
+              <h2>WebSocket chat</h2>
+            </div>
+            <div class="chat-indicator" id="chat-connection-state">Offline</div>
+          </div>
+
+          <div class="chat-log" id="chat-log" aria-live="polite"></div>
+
+          <form id="message-form" class="chat-compose">
+            <label class="field">
+              <span class="sr-only">Message</span>
+              <textarea
+                id="message-input"
+                class="text-input text-area"
+                name="message"
+                placeholder="Ask about a host, container, or recent alert..."
+                rows="3"
+              ></textarea>
+            </label>
+            <div class="chat-actions">
+              <button class="ghost-button" type="button" id="connect-chat-button">
+                Reconnect chat
+              </button>
+              <button class="primary-button" type="submit">Send</button>
+            </div>
+          </form>
+        </section>
+      </main>
+    </div>
+    <script src="/static/app.js" defer></script>
+  </body>
+</html>

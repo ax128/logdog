@@ -1,0 +1,47 @@
+[project]
+name = "logwatch"
+version = "0.1.0"
+description = "Minimal LogWatch service"
+authors = [
+    { name = "LogWatch Team", email = "team@example.com" },
+]
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.100.0",
+    "uvicorn>=0.23.0",
+    "docker>=7.0.0",
+    "aiosqlite>=0.20.0",
+    "apscheduler>=3.10.0",
+    "pyyaml>=6.0.0",
+    "paramiko>=3.0.0",
+    "deepagents>=0.5.2",
+    "python-telegram-bot>=22,<23",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23.0",
+    "httpx>=0.27.0",
+]
+# LangChain 聊天请求最小示例：`uv sync --extra langchain` 后运行 `tests/llm/langchain_chat_smoke.py`
+langchain = ["langchain-openai>=0.3.0"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+asyncio_default_fixture_loop_scope = "function"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["logwatch*"]
+namespaces = true
+
+[tool.setuptools.package-data]
+"logwatch.web" = ["static/**"]
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"

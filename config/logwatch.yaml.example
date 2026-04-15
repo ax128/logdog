@@ -1,0 +1,124 @@
+# Copy this file to config/logwatch.yaml and adjust values for your environment.
+# Security hardening:
+# User preprocessors under config/preprocessors/*.py are disabled by default.
+# Set LOGWATCH_ENABLE_USER_PREPROCESSORS=1 to enable loading custom preprocessors.
+
+metrics:
+  sample_interval_seconds: 30
+  host_system:
+    enabled: false
+    sample_interval_seconds: 30
+    collect_load: true
+    collect_network: true
+    security:
+      enabled: false
+      push_on_issue: true
+    report:
+      include_in_schedule: true
+      warn_thresholds:
+        cpu_percent: 85
+        mem_used_percent: 90
+        disk_used_percent: 90
+
+storage:
+  db_path: data/logwatch.db
+  sqlite:
+    journal_mode: wal
+    synchronous: normal
+    busy_timeout_ms: 5000
+  retention:
+    cleanup_interval_seconds: 86400
+    alerts_days: 30
+    audit_days: 30
+    send_failed_days: 14
+    metrics_days: 7
+    host_metrics_days: 7
+    storm_days: 14
+
+docker:
+  pool:
+    max_clients: 8
+    max_idle_seconds: 60
+
+scheduler:
+  max_instances: 1
+  coalesce: true
+  misfire_grace_time: 30
+
+notify:
+  # 兼容旧写法：telegram/wechat 单通道配置仍可用
+  telegram:
+    enabled: false
+    chat_ids: []
+    auto_chat_id: true # chat_ids 为空时，基于 TELEGRAM_BOT_TOKEN 自动匹配最近会话 chat_id
+    message_mode: text  # text|txt|md|doc
+  wechat:
+    enabled: false
+    webhook_urls: []
+    message_mode: text  # text|txt|md|doc
+  wecom:
+    enabled: false
+    targets: [] # 填完整 webhook URL；也可留空后走 WECOM_WEBHOOK_URL
+    message_mode: md  # text|txt|md|doc
+
+  # 新写法：命名多通道（推荐）
+  channels:
+    tel1:
+      type: telegram
+      enabled: false
+      chat_ids: []
+      message_mode: text
+    tel2:
+      type: telegram
+      enabled: false
+      chat_ids: []
+    weixin-user:
+      type: weixin
+      enabled: false
+      targets: []
+    wecom-prod:
+      type: wecom
+      enabled: false
+      targets: [] # 填完整 webhook URL；也可用 WECOM_TARGET / WECOM_WEBHOOK_URL
+
+  routing:
+    default_channels: [tel1]
+    rules:
+      - name: api-critical
+        priority: 100
+        match:
+          hosts: [prod-*]
+          containers: [api, gateway-*]
+          categories: [ERROR, OOM]
+        deliver:
+          channels: [wecom-prod]
+          message_mode: md
+
+llm:
+  enabled: true  # true: 使用 deepagent/llm 作为中间层；false: 走脚本直推
+
+agent:
+  authorized_users:
+    telegram: []  # Telegram user id 列表；为空时 bot 将拒绝所有消息
+
+defaults:
+  schedules_mode: append
+  schedules:
+    - name: default
+      interval_seconds: 300
+  containers:
+    exclude:
+      - logwatch
+  watch:
+    queue_maxsize: 1024
+    worker_count: 2
+    drop_when_full: true
+
+hosts:
+  - name: local
+    url: unix:///var/run/docker.sock
+  - name: prod
+    url: ssh://deploy@example-host
+    ssh_key: /path/to/id_rsa
+    notify:
+      channels: [tel2, wecom-prod]  # 当前主机仅允许这些命名通道
