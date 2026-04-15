@@ -761,11 +761,13 @@ def _fetch_stats_operation(container_id: str):
     return operation
 
 
-def _coerce_docker_time(value: Any) -> datetime | int | float | None:
-    """Convert string timestamps to datetime for Docker SDK compatibility."""
-    if value is None:
-        return None
-    if isinstance(value, (int, float, datetime)):
+def _coerce_docker_time(value: Any) -> Any:
+    """Convert string timestamps to datetime for Docker SDK compatibility.
+
+    Returns datetime for ISO 8601 strings, float for numeric strings,
+    and the original value unchanged for anything else (including None).
+    """
+    if value is None or isinstance(value, (int, float, datetime)):
         return value
     s = str(value).strip()
     if not s:
@@ -783,7 +785,8 @@ def _coerce_docker_time(value: Any) -> datetime | int | float | None:
         return dt
     except ValueError:
         pass
-    return None
+    # Unrecognised format — pass through and let Docker SDK validate
+    return value
 
 
 def _query_logs_operation(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+from datetime import datetime, timezone
 from typing import Any, cast
 
 import pytest
@@ -277,9 +278,9 @@ async def test_query_container_logs_returns_normalized_history_and_closes_client
                 "stdout": True,
                 "stderr": True,
                 "timestamps": True,
-                "since": "2026-04-11T10:00:00Z",
-                "until": "2026-04-11T10:05:00Z",
                 "tail": 2,
+                "since": datetime(2026, 4, 11, 10, 0, 0, tzinfo=timezone.utc),
+                "until": datetime(2026, 4, 11, 10, 5, 0, tzinfo=timezone.utc),
             },
         ),
         ("close", None),

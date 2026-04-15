@@ -404,6 +404,7 @@ async def test_main_app_reload_rebuilds_telegram_runtime_when_lifespan_running(
         """,
     )
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "telegram-token")
+    monkeypatch.setattr(main_module, "_load_persisted_authorized_users", lambda: set())
 
     events: list[str] = []
     apps: list[_FakeApplication] = []
@@ -516,6 +517,7 @@ async def test_main_app_reload_keeps_old_telegram_runtime_when_candidate_start_f
         """,
     )
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "telegram-token")
+    monkeypatch.setattr(main_module, "_load_persisted_authorized_users", lambda: set())
 
     events: list[str] = []
     apps: list[_FakeApplication] = []
