@@ -219,50 +219,65 @@ notify:
 # LogWatch 使用 LLM 对日志告警进行智能分析（摘要、根因推断等）。
 # 关闭 enabled 后退回纯文本模式，不调用任何 LLM。
 #
-# ── model 格式 ──
-#   "provider:model-name"
-#   provider 由 OPENAI_BASE_URL 决定实际后端，支持任何 OpenAI 兼容 API。
+# ── 两种配置方式 ──
 #
-# ── 环境变量 (.env) ──
-#   OPENAI_API_KEY    - API 密钥
-#   OPENAI_BASE_URL   - API 地址（可指向自建/第三方兼容端点）
+# 方式一: 单供应商（简单）
+#   通过环境变量 OPENAI_BASE_URL + OPENAI_API_KEY 配置唯一后端
+#   model 字段用 "provider:model" 格式（冒号分隔，provider 仅作标识）
 #
-# ── 多供应商示例 ──
-#   通过不同的 OPENAI_BASE_URL + OPENAI_API_KEY 切换供应商：
-#
-#   官方 OpenAI:
-#     OPENAI_BASE_URL=https://api.openai.com/v1
-#     OPENAI_API_KEY=sk-xxx
-#     model: "openai:gpt-4o"
-#
-#   Azure OpenAI:
-#     OPENAI_BASE_URL=https://your-resource.openai.azure.com/openai/deployments/gpt-4o
-#     OPENAI_API_KEY=your-azure-key
-#     model: "openai:gpt-4o"
-#
-#   自建/代理 (agentop, one-api, new-api 等):
-#     OPENAI_BASE_URL=https://api.agentop.dev/v1/__gw__/t/8317
-#     OPENAI_API_KEY=your-key
-#     model: "openai:gpt-5.4"
-#
-#   Anthropic (通过 OpenAI 兼容代理):
-#     OPENAI_BASE_URL=https://your-proxy/v1
-#     model: "openai:claude-sonnet-4-6"
+# 方式二: 多供应商（推荐）
+#   在 llm.providers 中定义多个供应商，各自有独立的 api_base 和 api_key
+#   model 字段用 "provider/model" 格式（斜杠分隔，自动查找供应商凭据）
+#   不同容器可以使用不同供应商的不同模型
 #
 # ── 容器级覆盖 ──
-#   不同容器可使用不同模型（在 hosts[].containers.overrides 中配置）：
-#     api 容器 → 高质量模型 (gpt-4o)    ← 核心业务日志需要精准分析
-#     worker   → 低成本模型 (gpt-4o-mini) ← 后台任务日志量大但不关键
-#     redis    → 关闭 LLM (enabled: false) ← 规则匹配即可，不需要 LLM
-#
+#   api 容器 → 高质量模型 (openai/gpt-4o)
+#   worker   → 低成本模型 (agentop/gpt-5.4-mini)
+#   redis    → 关闭 LLM (enabled: false)
 #   详见下方 hosts 段的 containers.overrides.llm 示例。
 # =====================================================================
 llm:
   enabled: true
-  model: "openai:${LLM_MODEL}"
+
+  # ── 方式一: 单供应商 ──
+  # 凭据来自环境变量 OPENAI_API_KEY + OPENAI_BASE_URL
+  # model: "openai:${LLM_MODEL}"
   # model: "openai:gpt-4o"
-  # model: "openai:gpt-4o-mini"
-  # model: "openai:gpt-5.4"
+
+  # ── 方式二: 多供应商 (推荐) ──
+  # 使用 "provider/model" 引用下方 providers 中定义的供应商
+  default_model: "agentop/gpt-5.4"
+
+  providers:
+    # --- 自建/代理 ---
+    agentop:
+      api_base: "https://api.agentop.dev/v1/__gw__/t/8317"
+      api_key: "${AGENTOP_API_KEY}"
+      models: [gpt-5.4, gpt-5.4-mini]
+
+    # --- 官方 OpenAI ---
+    # openai:
+    #   api_base: "https://api.openai.com/v1"
+    #   api_key: "${OPENAI_API_KEY}"
+    #   models: [gpt-4o, gpt-4o-mini]
+
+    # --- xAI ---
+    # xai:
+    #   api_base: "https://api.x.ai/v1"
+    #   api_key: "${XAI_API_KEY}"
+    #   models: [grok-4]
+
+    # --- Azure OpenAI ---
+    # azure:
+    #   api_base: "https://your-resource.openai.azure.com/openai/deployments/gpt-4o"
+    #   api_key: "${AZURE_OPENAI_KEY}"
+    #   models: [gpt-4o]
+
+    # --- Anthropic (通过 OpenAI 兼容代理) ---
+    # anthropic:
+    #   api_base: "https://your-proxy/v1"
+    #   api_key: "${ANTHROPIC_KEY}"
+    #   models: [claude-sonnet-4-6]
 
 agent:
   authorized_users:
