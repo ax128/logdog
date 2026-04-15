@@ -23,6 +23,8 @@ def analyze_with_template(
     runtime_factory: Any | None = None,
     enable_agent: bool = True,
     model: str | None = None,
+    api_base: str | None = None,
+    api_key: str | None = None,
 ) -> str:
     """
     Render prompt with template and downgrade to plaintext fallback on failures.
@@ -70,6 +72,8 @@ def analyze_with_template(
         agent_runtime=agent_runtime,
         runtime_factory=runtime_factory,
         model=model,
+        api_base=api_base,
+        api_key=api_key,
     )
     if runtime is None:
         return plaintext
@@ -101,6 +105,8 @@ def _resolve_agent_runtime(
     agent_runtime: AgentRuntime | None,
     runtime_factory: Any | None,
     model: str | None = None,
+    api_base: str | None = None,
+    api_key: str | None = None,
 ) -> AgentRuntime | None:
     if agent_runtime is not None:
         return agent_runtime
@@ -111,4 +117,4 @@ def _resolve_agent_runtime(
             logger.warning("analyzer runtime factory failed", exc_info=True)
             return None
         return runtime
-    return build_analyzer_runtime(model=model)
+    return build_analyzer_runtime(model=model, api_base=api_base, api_key=api_key)

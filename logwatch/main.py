@@ -44,6 +44,7 @@ from logwatch.core.docker_connector import (
 from logwatch.core.host_manager import HostManager
 from logwatch.core.metrics_writer import MetricsSqliteWriter
 from logwatch.llm.agent_runtime import build_chat_runtime
+from logwatch.llm.provider import resolve_llm_params
 from logwatch.llm.tools import create_tool_registry
 from logwatch.core.retention_scheduler import RetentionCleanupScheduler
 from logwatch.notify.base import BaseNotifier, normalize_message_mode
@@ -867,9 +868,14 @@ def create_app(
         app_config=current_app_config,
         docker_client_pool=resolved_docker_client_pool,
     )
-    _llm_model = ((current_app_config or {}).get("llm") or {}).get("model") or None
+    _llm_cfg = (current_app_config or {}).get("llm") or {}
+    _llm_model = _llm_cfg.get("default_model") or _llm_cfg.get("model") or None
+    _llm_params = resolve_llm_params(_llm_model, _llm_cfg if isinstance(_llm_cfg, dict) else None)
     app.state.chat_runtime = build_chat_runtime(
-        tool_registry=app.state.tool_registry, model=_llm_model,
+        tool_registry=app.state.tool_registry,
+        model=_llm_params.model or None,
+        api_base=_llm_params.api_base or None,
+        api_key=_llm_params.api_key or None,
     )
     app.state.telegram_runtime = _build_telegram_runtime_from_config(
         app_config=current_app_config,
@@ -991,9 +997,14 @@ def create_app(
                 app_config=new_app_config,
                 docker_client_pool=resolved_docker_client_pool,
             )
-            _new_llm_model = (new_app_config.get("llm") or {}).get("model") or None
+            _new_llm_cfg = new_app_config.get("llm") or {}
+            _new_llm_model = _new_llm_cfg.get("default_model") or _new_llm_cfg.get("model") or None
+            _new_llm_params = resolve_llm_params(_new_llm_model, _new_llm_cfg if isinstance(_new_llm_cfg, dict) else None)
             candidate_chat_runtime = build_chat_runtime(
-                tool_registry=candidate_tool_registry, model=_new_llm_model,
+                tool_registry=candidate_tool_registry,
+                model=_new_llm_params.model or None,
+                api_base=_new_llm_params.api_base or None,
+                api_key=_new_llm_params.api_key or None,
             )
             candidate_telegram_runtime = _build_telegram_runtime_from_config(
                 app_config=new_app_config,

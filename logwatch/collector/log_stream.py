@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from logwatch.llm.analyzer import analyze_with_template
+from logwatch.llm.provider import resolve_llm_params
 from logwatch.notify.render import render_output
 from logwatch.pipeline.cooldown import CooldownStore
 from logwatch.pipeline.filter import apply_rules
@@ -68,6 +69,7 @@ class _DedupWindow:
     output_template: str
     analysis_mode: str
     llm_model: str | None
+    llm_config: dict[str, Any] | None
     notifier_send: Any
     save_alert: Any
     mute_checker: Any
@@ -111,6 +113,7 @@ def _schedule_dedup_summary(
     output_template: str,
     analysis_mode: str,
     llm_model: str | None = None,
+    llm_config: dict[str, Any] | None = None,
     notifier_send: Any,
     save_alert: Any,
     mute_checker: Any,
@@ -134,6 +137,7 @@ def _schedule_dedup_summary(
                 output_template=output_template,
                 analysis_mode=analysis_mode,
                 llm_model=llm_model,
+                llm_config=llm_config,
                 notifier_send=notifier_send,
                 save_alert=save_alert,
                 mute_checker=mute_checker,
@@ -146,6 +150,7 @@ def _schedule_dedup_summary(
             existing.output_template = output_template
             existing.analysis_mode = analysis_mode
             existing.llm_model = llm_model
+            existing.llm_config = llm_config
             existing.notifier_send = notifier_send
             existing.save_alert = save_alert
             existing.mute_checker = mute_checker
@@ -223,20 +228,26 @@ async def _flush_dedup_summary_after_delay(
             line=window.sample_line,
         )
     elif window.analysis_mode == "llm":
+        _dedup_params = resolve_llm_params(window.llm_model, window.llm_config)
         analysis = analyze_with_template(
             "alert",
             context,
             window.prompt_template,
             enable_agent=True,
-            model=window.llm_model,
+            model=_dedup_params.model or None,
+            api_base=_dedup_params.api_base or None,
+            api_key=_dedup_params.api_key or None,
         )
     else:
+        _dedup_params = resolve_llm_params(window.llm_model, window.llm_config)
         analysis = analyze_with_template(
             "alert",
             context,
             window.prompt_template,
             enable_agent=False,
-            model=window.llm_model,
+            model=_dedup_params.model or None,
+            api_base=_dedup_params.api_base or None,
+            api_key=_dedup_params.api_key or None,
         )
     message = _render_notification_message(
         output_template=window.output_template,
@@ -348,7 +359,9 @@ async def run_alert_once(
     check_time = float(time.time() if now is None else now)
     dedup_key = (host, container_id, rule.matched_category)
     analysis_mode = _resolve_alert_analysis_mode(cfg)
-    _llm_model = (cfg.get("llm") or {}).get("model") if isinstance(cfg.get("llm"), dict) else None
+    _llm_cfg = cfg.get("llm") if isinstance(cfg.get("llm"), dict) else None
+    _llm_model = (_llm_cfg or {}).get("default_model") or (_llm_cfg or {}).get("model") or None
+    _llm_params = resolve_llm_params(_llm_model, _llm_cfg)
 
     if mute_checker is not None:
         try:
@@ -450,6 +463,7 @@ async def run_alert_once(
                 output_template=output_template,
                 analysis_mode=analysis_mode,
                 llm_model=_llm_model,
+                llm_config=_llm_cfg,
                 notifier_send=notifier_send,
                 save_alert=save_alert,
                 mute_checker=mute_checker,
@@ -511,7 +525,9 @@ async def run_alert_once(
             context,
             prompt_template,
             enable_agent=True,
-            model=_llm_model,
+            model=_llm_params.model or None,
+            api_base=_llm_params.api_base or None,
+            api_key=_llm_params.api_key or None,
         )
     else:
         analysis = analyze_with_template(
@@ -519,7 +535,9 @@ async def run_alert_once(
             context,
             prompt_template,
             enable_agent=False,
-            model=_llm_model,
+            model=_llm_params.model or None,
+            api_base=_llm_params.api_base or None,
+            api_key=_llm_params.api_key or None,
         )
     message = _render_notification_message(
         output_template=output_template,
@@ -853,6 +871,9 @@ class LogStreamWatcher:
                         existing_llm = {}
                     merged_llm = dict(existing_llm)
                     merged_llm.update(override_llm)
+                    # Ensure providers are inherited from host config if not overridden
+                    if "providers" not in override_llm and "providers" in existing_llm:
+                        merged_llm["providers"] = existing_llm["providers"]
                     merged_config["llm"] = merged_llm
 
             config = merged_config

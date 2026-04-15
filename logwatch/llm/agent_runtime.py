@@ -111,6 +111,8 @@ def build_chat_runtime(
     *,
     tool_registry: Mapping[str, Any] | None,
     model: str | None = None,
+    api_base: str | None = None,
+    api_key: str | None = None,
     runtime_factory: Callable[..., Any] | None = None,
     checkpointer_factory: Callable[[], Any] | None = None,
 ) -> AgentRuntime:
@@ -130,6 +132,10 @@ def build_chat_runtime(
     }
     if model:
         factory_kwargs["model"] = model
+    if api_base:
+        factory_kwargs["api_base"] = api_base
+    if api_key:
+        factory_kwargs["api_key"] = api_key
 
     try:
         agent = factory(**factory_kwargs)
@@ -144,6 +150,8 @@ def build_analyzer_runtime(
     *,
     tool_registry: Mapping[str, Any] | None = None,
     model: str | None = None,
+    api_base: str | None = None,
+    api_key: str | None = None,
     runtime_factory: Callable[..., Any] | None = None,
 ) -> AgentRuntime | None:
     factory = runtime_factory or _load_deep_agent_factory()
@@ -155,6 +163,10 @@ def build_analyzer_runtime(
     }
     if model:
         factory_kwargs["model"] = model
+    if api_base:
+        factory_kwargs["api_base"] = api_base
+    if api_key:
+        factory_kwargs["api_key"] = api_key
 
     try:
         agent = factory(**factory_kwargs)
