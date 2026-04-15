@@ -244,9 +244,22 @@ defaults:
 # =====================================================================
 # 被监控的服务器
 #
-# notify.channels: 该服务器允许使用的通道白名单
-# 不配 notify.channels → 可用所有已定义通道
-# 配了 → 只允许列出的通道（routing rules 也受此约束）
+# 每台服务器可配置:
+#   url             - Docker 连接地址
+#   ssh_key         - SSH 密钥路径 (ssh:// 连接时需要)
+#   prompt_template - 告警分析提示词模板 (服务器默认)
+#   output_template - 告警输出格式模板 (服务器默认)
+#   notify.channels - 该服务器允许使用的通道白名单
+#   containers      - 容器筛选 + 容器级自定义配置
+#
+# ── 可用的模板 ──
+#   prompt_template: default_alert / default_daily / default_hourly /
+#                    default_heartbeat / default_interval
+#                    (或自定义: 放在 templates/prompts/ 目录下)
+#
+#   output_template: standard / brief / detailed / ops_friendly /
+#                    business / heartbeat
+#                    (或自定义: 放在 templates/output/ 目录下)
 # =====================================================================
 hosts:
   # ── 本地开发 ──
@@ -255,20 +268,53 @@ hosts:
     notify:
       channels: [local-tel]
 
-  # ── 生产服务器 ──
+  # ── 生产服务器 (完整示例) ──
   # - name: prod
   #   url: ssh://root@10.0.1.1:22
   #   ssh_key: /root/.ssh/id_ed25519
+  #   prompt_template: default_alert     # 该服务器的默认提示词
+  #   output_template: ops_friendly      # 该服务器的默认输出格式
   #   notify:
-  #     channels: [prod-api-tel, prod-ops-tel, ops-wecom, prod-wecom]
-  #     # ↑ 允许 4 个通道，routing rules 按容器/类别分发
+  #     channels: [prod-api-tel, prod-ops-tel, ops-wecom]
+  #
+  #   containers:
+  #     # 只监听这些容器 (不配 include = 监听全部)
+  #     include: [api, api-*, worker-*, nginx, redis]
+  #     # 排除这些容器
+  #     exclude: [logwatch, tmp-*]
+  #
+  #     # ── 容器级自定义 ──
+  #     # 支持精确名称或通配符 (fnmatch)
+  #     # 每个容器可独立设置提示词、输出格式、告警规则
+  #     overrides:
+  #       api:
+  #         prompt_template: api_alert      # api 用专属提示词
+  #         output_template: detailed       # api 用详细输出
+  #         rules:
+  #           alert_keywords: [error, fatal, "5xx", timeout]
+  #           ignore: ["health.?check", "GET /ping"]
+  #
+  #       "worker-*":                       # 所有 worker 容器
+  #         prompt_template: worker_alert
+  #         output_template: brief
+  #         rules:
+  #           alert_keywords: [error, fatal, oom]
+  #           ignore: ["retry succeeded"]
+  #
+  #       redis:
+  #         rules:
+  #           alert_keywords: [error, oom, "maxmemory"]
+  #           ignore: ["Saving RDB", "Background saving"]
 
   # ── 测试环境 ──
   # - name: staging
   #   url: ssh://deploy@10.0.2.1:22
   #   ssh_key: /root/.ssh/id_ed25519
+  #   output_template: brief             # 测试环境用简短格式
   #   notify:
   #     channels: [staging-tel]
+  #   containers:
+  #     exclude: [logwatch]
 
 
 # =====================================================================
@@ -283,5 +329,8 @@ hosts:
 #
 # 所有服务器的告警都会发到 local-tel 这个通道。
 #
-# 需要分流时，按上面注释的示例添加 channels + rules + hosts 即可。
+# 需要分流时:
+#   channels  - 添加通道定义
+#   rules     - 添加路由规则 (按服务器/容器/类别)
+#   hosts     - 配置通道白名单 + 容器筛选 + 容器级覆盖
 # =====================================================================
