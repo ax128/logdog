@@ -18,7 +18,7 @@
 ### 1. 安装
 
 ```bash
-git clone https://github.com/your-org/logdog.git
+git clone https://github.com/ax128/logdog.git
 cd logdog
 python -m venv .venv
 source .venv/bin/activate
