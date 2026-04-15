@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import logging
@@ -7,6 +8,8 @@ import time
 from collections import defaultdict, deque
 from collections.abc import Callable
 from typing import Any
+
+from logwatch.llm.tool_types import ToolResult
 
 from logwatch.core.db import query_metrics
 from logwatch.core.docker_connector import (
@@ -154,7 +157,7 @@ class AgentTool:
         *,
         user_id: str,
         arguments: dict[str, Any] | None,
-    ) -> dict[str, Any]:
+    ) -> Any:
         normalized_user_id = str(user_id or "").strip()
         if normalized_user_id == "":
             raise ValueError("user_id must not be empty")
@@ -353,7 +356,7 @@ def create_tool_registry(
         user_id: str,
         arguments: dict[str, Any],
         handler: Callable[[dict[str, Any], Any], Any],
-    ) -> dict[str, Any]:
+    ) -> Any:
         writer = await resolve_writer()
         audit_payload = {
             "event": "llm_tool_call",
@@ -402,7 +405,7 @@ def create_tool_registry(
         arguments: dict[str, Any], _writer: Any
     ) -> dict[str, Any]:
         _ensure_no_unknown_required_arguments(arguments, allowed_keys=())
-        return {"hosts": list(host_manager.list_host_statuses())}
+        return ToolResult.ok(json.dumps({"hosts": list(host_manager.list_host_statuses())}))
 
     async def list_containers_handler(
         arguments: dict[str, Any],
@@ -410,7 +413,7 @@ def create_tool_registry(
     ) -> dict[str, Any]:
         host = _require_host_config(host_manager, arguments)
         containers = await list_containers_op(host)
-        return {"host": host["name"], "containers": containers}
+        return ToolResult.ok(json.dumps({"host": host["name"], "containers": containers}))
 
     async def query_logs_handler(
         arguments: dict[str, Any], _writer: Any
@@ -441,11 +444,11 @@ def create_tool_registry(
             until=end_time,
             max_lines=max_lines,
         )
-        return {
+        return ToolResult.ok(json.dumps({
             "host": host["name"],
             "container_id": container["id"],
             "lines": lines,
-        }
+        }))
 
     async def get_metrics_handler(
         arguments: dict[str, Any], writer: Any
@@ -473,11 +476,11 @@ def create_tool_registry(
             end_time=end_time,
             limit=limit,
         )
-        return {
+        return ToolResult.ok(json.dumps({
             "host": host["name"],
             "container_id": container_id,
             "points": points,
-        }
+        }))
 
     async def get_alerts_handler(
         arguments: dict[str, Any], writer: Any
@@ -488,7 +491,7 @@ def create_tool_registry(
             max_value=MAX_TOOL_ALERTS_LIMIT,
             field_name="limit",
         )
-        return {"alerts": list(await _maybe_await(writer.list_alerts(limit=limit)))}
+        return ToolResult.ok(json.dumps({"alerts": list(await _maybe_await(writer.list_alerts(limit=limit)))}))
 
     async def mute_alert_handler(
         arguments: dict[str, Any], writer: Any
@@ -516,7 +519,7 @@ def create_tool_registry(
             "expires_at": expires_at,
         }
         await _maybe_await(writer.write_mute(payload))
-        return {"ok": True, "mute": payload}
+        return ToolResult.ok(json.dumps({"ok": True, "mute": payload}))
 
     async def unmute_alert_handler(
         arguments: dict[str, Any], writer: Any
@@ -537,7 +540,7 @@ def create_tool_registry(
                 )
             )
         )
-        return {"ok": True, "deleted": deleted}
+        return ToolResult.ok(json.dumps({"ok": True, "deleted": deleted}))
 
     async def restart_container_handler(
         arguments: dict[str, Any], _writer: Any
@@ -556,7 +559,7 @@ def create_tool_registry(
             host, container_id=container_id, list_containers_op=list_containers_op
         )
         result = await restart_container_op(host, container, timeout=timeout)
-        return {"ok": True, "result": result}
+        return ToolResult.ok(json.dumps({"ok": True, "result": result}))
 
     return {
         "list_hosts": AgentTool(

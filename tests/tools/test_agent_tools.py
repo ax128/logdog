@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
 from copy import deepcopy
 from typing import Any
 
 import pytest
 
+from logwatch.llm.tool_types import ToolResult
 from logwatch.llm.tools import create_tool_registry
 
 
@@ -193,18 +195,42 @@ async def test_tool_registry_invokes_all_task6_tools_and_audits_calls() -> None:
         },
     )
 
-    assert hosts["hosts"][0]["name"] == "prod-a"
-    assert containers["containers"][0]["id"] == "c1"
+    assert isinstance(hosts, ToolResult)
+    assert not hosts.is_error
+    hosts_data = json.loads(hosts.content)
+    assert hosts_data["hosts"][0]["name"] == "prod-a"
+
+    assert isinstance(containers, ToolResult)
+    containers_data = json.loads(containers.content)
+    assert containers_data["containers"][0]["id"] == "c1"
     assert list_container_calls == ["prod-a", "prod-a", "prod-a"]
-    assert logs["lines"][0]["line"] == "boom"
+
+    assert isinstance(logs, ToolResult)
+    logs_data = json.loads(logs.content)
+    assert logs_data["lines"][0]["line"] == "boom"
     assert query_log_calls[0]["max_lines"] == 50
-    assert metrics["points"][0]["cpu"] == 12.5
+
+    assert isinstance(metrics, ToolResult)
+    metrics_data = json.loads(metrics.content)
+    assert metrics_data["points"][0]["cpu"] == 12.5
     assert metric_calls[0]["writer"] is writer
-    assert alerts["alerts"][0]["payload"]["limit"] == 5
-    assert muted["ok"] is True
+
+    assert isinstance(alerts, ToolResult)
+    alerts_data = json.loads(alerts.content)
+    assert alerts_data["alerts"][0]["payload"]["limit"] == 5
+
+    assert isinstance(muted, ToolResult)
+    muted_data = json.loads(muted.content)
+    assert muted_data["ok"] is True
     assert writer.mute_calls[0]["category"] == "error"
-    assert unmuted == {"ok": True, "deleted": 1}
-    assert restarted["result"]["container_id"] == "c1"
+
+    assert isinstance(unmuted, ToolResult)
+    unmuted_data = json.loads(unmuted.content)
+    assert unmuted_data == {"ok": True, "deleted": 1}
+
+    assert isinstance(restarted, ToolResult)
+    restarted_data = json.loads(restarted.content)
+    assert restarted_data["result"]["container_id"] == "c1"
     assert restart_calls == [{"host": "prod-a", "container_id": "c1", "timeout": 15}]
     assert len(writer.audit_calls) == 8
     assert {payload["tool"] for payload, _, _ in writer.audit_calls} == set(registry)
@@ -288,5 +314,7 @@ async def test_tool_registry_returns_success_when_audit_write_fails_after_handle
         },
     )
 
-    assert result["ok"] is True
+    assert isinstance(result, ToolResult)
+    result_data = json.loads(result.content)
+    assert result_data["ok"] is True
     assert restart_calls == [{"host": "prod-a", "container_id": "c1", "timeout": 5}]

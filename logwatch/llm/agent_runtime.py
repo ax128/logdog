@@ -288,11 +288,16 @@ def _wrap_registered_tool(tool: Any) -> Any:
     if meta is not None:
         args_schema = build_args_schema(name, meta.get("parameters", {}))
 
-    async def _atool(**kwargs: Any) -> Any:
-        return await tool.invoke(
+    async def _atool(**kwargs: Any) -> str:
+        result = await tool.invoke(
             user_id=_CURRENT_RUNTIME_USER_ID.get(),
             arguments=kwargs,
         )
+        if hasattr(result, "is_error") and result.is_error:
+            return f"[ERROR] {result.content}"
+        if hasattr(result, "content"):
+            return result.content
+        return str(result)
 
     def _tool(**kwargs: Any) -> Any:
         try:
