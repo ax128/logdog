@@ -51,6 +51,7 @@ from logwatch.notify.policy import build_notify_routing_policy
 from logwatch.notify.router import NotifyRouter
 from logwatch.notify.telegram import (
     TELEGRAM_AUTO_TARGET,
+    TelegramBotTokenSender,
     TelegramNotifier,
     build_telegram_bot_runtime,
     build_telegram_bot_token_sender,
@@ -2242,11 +2243,11 @@ def _resolve_telegram_bot_tokens(channel_cfg: dict[str, Any] | None) -> list[str
 
 
 def _merge_send_funcs(send_funcs: list[Any]) -> Any:
-    async def wrapped(target: str, message: str) -> None:
+    async def wrapped(target: str, message: str, parse_mode: str = "") -> None:
         first_exc: Exception | None = None
         for send_func in send_funcs:
             try:
-                result = send_func(target, message)
+                result = send_func(target, message, parse_mode)
                 if inspect.isawaitable(result):
                     await result
             except Exception as exc:  # noqa: BLE001
@@ -2347,7 +2348,7 @@ def _build_multi_target_send_func(send_func: Any, targets: list[str]):
         )[:overflow]:
             retry_targets_by_key.pop(key, None)
 
-    async def wrapped(_host: str, message: str) -> None:
+    async def wrapped(_host: str, message: str, parse_mode: str = "") -> None:
         now = time.monotonic()
         prune_retry_state(now)
         key = (str(_host), str(message))
@@ -2362,7 +2363,7 @@ def _build_multi_target_send_func(send_func: Any, targets: list[str]):
         first_exc: Exception | None = None
         for target in pending_targets:
             try:
-                result = send_func(target, message)
+                result = send_func(target, message, parse_mode)
                 if inspect.isawaitable(result):
                     await result
             except Exception as exc:  # noqa: BLE001
@@ -2464,7 +2465,7 @@ def _build_telegram_runtime_from_config(
         logger.warning(
             "Telegram Bot enabled but no authorized users configured — all messages will be rejected"
         )
-    return build_telegram_bot_runtime(
+    runtime = build_telegram_bot_runtime(
         bot_token=telegram_bot_token,
         chat_runtime=chat_runtime,
         authorized_user_ids=authorized_telegram_users,
@@ -2473,6 +2474,15 @@ def _build_telegram_runtime_from_config(
         application_factory=telegram_application_factory,
         handler_binder=telegram_handler_binder,
     )
+    if runtime is not None and telegram_bot_token:
+        try:
+            sender = TelegramBotTokenSender(telegram_bot_token)
+            runtime.set_sender(sender)
+        except Exception:
+            logger.warning(
+                "failed to create TelegramBotTokenSender for runtime", exc_info=True
+            )
+    return runtime
 
 
 def _resolve_metrics_db_path(

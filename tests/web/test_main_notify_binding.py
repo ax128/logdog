@@ -115,10 +115,10 @@ def test_main_app_builds_notify_router_from_app_config_targets() -> None:
             raise RuntimeError("docker unavailable")
         return {"server_version": "24.0.7"}
 
-    async def telegram_send(target: str, message: str) -> None:
+    async def telegram_send(target: str, message: str, parse_mode: str = "") -> None:
         telegram_calls.append((target, message))
 
-    async def wechat_send(target: str, message: str) -> None:
+    async def wechat_send(target: str, message: str, parse_mode: str = "") -> None:
         wechat_calls.append((target, message))
 
     async def run_case() -> None:
@@ -166,7 +166,7 @@ def test_main_app_notify_router_uses_env_targets_when_config_empty(monkeypatch) 
             raise RuntimeError("docker unavailable")
         return {"server_version": "24.0.7"}
 
-    async def telegram_send(target: str, message: str) -> None:
+    async def telegram_send(target: str, message: str, parse_mode: str = "") -> None:
         telegram_calls.append((target, message))
 
     async def run_case() -> None:
@@ -206,7 +206,7 @@ def test_main_app_notify_router_persists_send_failures_by_default() -> None:
             raise RuntimeError("docker unavailable")
         return {"server_version": "24.0.7"}
 
-    async def telegram_send(_target: str, _message: str) -> None:
+    async def telegram_send(_target: str, _message: str, parse_mode: str = "") -> None:
         raise RuntimeError("telegram down")
 
     def connect_db(db_path: str) -> _SyncAioSqliteConn:
@@ -259,7 +259,7 @@ def test_main_app_notify_router_persists_send_failures_by_default() -> None:
 def test_main_app_notify_router_applies_telegram_message_mode_from_config() -> None:
     telegram_calls: list[tuple[str, str]] = []
 
-    async def telegram_send(target: str, message: str) -> None:
+    async def telegram_send(target: str, message: str, parse_mode: str = "") -> None:
         telegram_calls.append((target, message))
 
     async def run_case() -> None:
@@ -295,10 +295,10 @@ def test_main_app_notify_router_routes_specific_container_to_specific_channel() 
     telegram_calls: list[tuple[str, str]] = []
     wechat_calls: list[tuple[str, str]] = []
 
-    async def telegram_send(target: str, message: str) -> None:
+    async def telegram_send(target: str, message: str, parse_mode: str = "") -> None:
         telegram_calls.append((target, message))
 
-    async def wechat_send(target: str, message: str) -> None:
+    async def wechat_send(target: str, message: str, parse_mode: str = "") -> None:
         wechat_calls.append((target, message))
 
     async def run_case() -> None:
@@ -346,10 +346,10 @@ def test_main_app_notify_router_supports_named_multi_channels() -> None:
     telegram_calls: list[tuple[str, str]] = []
     wechat_calls: list[tuple[str, str]] = []
 
-    async def telegram_send(target: str, message: str) -> None:
+    async def telegram_send(target: str, message: str, parse_mode: str = "") -> None:
         telegram_calls.append((target, message))
 
-    async def wechat_send(target: str, message: str) -> None:
+    async def wechat_send(target: str, message: str, parse_mode: str = "") -> None:
         wechat_calls.append((target, message))
 
     async def run_case() -> None:
@@ -413,7 +413,7 @@ def test_main_app_notify_router_supports_named_multi_channels() -> None:
 def test_main_app_host_notify_channels_filters_named_channels() -> None:
     telegram_calls: list[tuple[str, str]] = []
 
-    async def telegram_send(target: str, message: str) -> None:
+    async def telegram_send(target: str, message: str, parse_mode: str = "") -> None:
         telegram_calls.append((target, message))
 
     async def run_case() -> None:
@@ -481,10 +481,10 @@ def test_main_app_notify_router_supports_weixin_and_wecom_named_channels() -> No
     weixin_calls: list[tuple[str, str]] = []
     wecom_calls: list[tuple[str, str]] = []
 
-    async def weixin_send(target: str, message: str) -> None:
+    async def weixin_send(target: str, message: str, parse_mode: str = "") -> None:
         weixin_calls.append((target, message))
 
-    async def wecom_send(target: str, message: str) -> None:
+    async def wecom_send(target: str, message: str, parse_mode: str = "") -> None:
         wecom_calls.append((target, message))
 
     async def run_case() -> None:
@@ -537,7 +537,7 @@ def test_main_app_notify_router_supports_weixin_and_wecom_named_channels() -> No
 def test_main_app_notify_router_supports_legacy_wechat_alias_for_wecom() -> None:
     wecom_calls: list[tuple[str, str]] = []
 
-    async def wecom_send(target: str, message: str) -> None:
+    async def wecom_send(target: str, message: str, parse_mode: str = "") -> None:
         wecom_calls.append((target, message))
 
     async def run_case() -> None:
@@ -571,7 +571,7 @@ def test_main_app_notify_router_drops_message_when_rule_selects_unknown_channel(
 ):
     telegram_calls: list[tuple[str, str]] = []
 
-    async def telegram_send(target: str, message: str) -> None:
+    async def telegram_send(target: str, message: str, parse_mode: str = "") -> None:
         telegram_calls.append((target, message))
 
     async def run_case() -> bool:
@@ -617,10 +617,10 @@ def test_main_app_notify_router_wechat_route_does_not_duplicate_when_wecom_also_
     wechat_calls: list[tuple[str, str]] = []
     wecom_calls: list[tuple[str, str]] = []
 
-    async def wechat_send(target: str, message: str) -> None:
+    async def wechat_send(target: str, message: str, parse_mode: str = "") -> None:
         wechat_calls.append((target, message))
 
-    async def wecom_send(target: str, message: str) -> None:
+    async def wecom_send(target: str, message: str, parse_mode: str = "") -> None:
         wecom_calls.append((target, message))
 
     async def run_case() -> bool:
@@ -662,10 +662,10 @@ def test_build_global_schedule_notifiers_supports_home_channels_and_channel_ids_
     weixin_calls: list[tuple[str, str]] = []
     wecom_calls: list[tuple[str, str]] = []
 
-    async def weixin_send(target: str, message: str) -> None:
+    async def weixin_send(target: str, message: str, parse_mode: str = "") -> None:
         weixin_calls.append((target, message))
 
-    async def wecom_send(target: str, message: str) -> None:
+    async def wecom_send(target: str, message: str, parse_mode: str = "") -> None:
         wecom_calls.append((target, message))
 
     notifiers = main_module._build_global_schedule_notifiers(
@@ -706,7 +706,7 @@ def test_main_app_notify_router_uses_builtin_telegram_sender_with_auto_target(
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "telegram-bot-token")
 
     def fake_builder(_token: str):
-        def send(target: str, message: str) -> None:
+        def send(target: str, message: str, parse_mode: str = "") -> None:
             telegram_calls.append((target, message))
 
         setattr(send, "_logwatch_supports_auto_target", True)
@@ -757,7 +757,7 @@ def test_main_app_notify_router_supports_multiple_telegram_bot_tokens_from_confi
         if normalized == "":
             return None
 
-        def send(target: str, message: str) -> None:
+        def send(target: str, message: str, parse_mode: str = "") -> None:
             telegram_calls.append((normalized, target, message))
 
         setattr(send, "_logwatch_supports_auto_target", True)
@@ -808,7 +808,7 @@ def test_main_app_notify_router_uses_builtin_wecom_sender_from_webhook_env(
     )
 
     def fake_builder(*, timeout_seconds: float = 10.0, max_retries: int = 3):
-        def send(target: str, message: str) -> None:
+        def send(target: str, message: str, parse_mode: str = "") -> None:
             wecom_calls.append((target, message))
 
         return send

@@ -317,7 +317,7 @@ async def test_main_app_default_reload_action_rebuilds_notify_router_targets(
 
     sent_targets: list[tuple[str, str]] = []
 
-    async def telegram_send(target: str, message: str) -> None:
+    async def telegram_send(target: str, message: str, parse_mode: str = "") -> None:
         sent_targets.append((target, message))
 
     app = main_module.create_app(

@@ -135,7 +135,7 @@ async def test_router_reports_success_when_any_channel_succeeds() -> None:
 async def test_telegram_chunks_large_message_to_4096() -> None:
     chunks: list[str] = []
 
-    async def sender(target: str, message: str) -> None:
+    async def sender(target: str, message: str, parse_mode: str = "") -> None:
         assert target == "chat-id"
         chunks.append(message)
 
@@ -290,7 +290,7 @@ def test_split_message_prefers_newline_boundaries() -> None:
 async def test_telegram_notifier_supports_doc_message_mode() -> None:
     chunks: list[str] = []
 
-    async def sender(target: str, message: str) -> None:
+    async def sender(target: str, message: str, parse_mode: str = "") -> None:
         assert target == "chat-id"
         chunks.append(message)
 
@@ -342,7 +342,7 @@ async def test_multi_target_send_func_retries_only_failed_targets() -> None:
     calls: list[str] = []
     failures = {"tg-2": 1}
 
-    async def telegram_send(target: str, _message: str) -> None:
+    async def telegram_send(target: str, _message: str, parse_mode: str = "") -> None:
         calls.append(target)
         if target == "tg-2" and failures["tg-2"] > 0:
             failures["tg-2"] -= 1
@@ -378,7 +378,7 @@ async def test_multi_target_send_func_prunes_expired_retry_state(
     now = {"value": 0.0}
     monkeypatch.setattr("logwatch.main.time.monotonic", lambda: now["value"])
 
-    async def telegram_send(_target: str, _message: str) -> None:
+    async def telegram_send(_target: str, _message: str, parse_mode: str = "") -> None:
         raise RuntimeError("always fail")
 
     send_func = _build_multi_target_send_func(telegram_send, ["tg-1"])

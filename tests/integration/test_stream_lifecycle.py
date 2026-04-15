@@ -116,7 +116,7 @@ class _TelegramSenderStub:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str]] = []
 
-    async def __call__(self, target: str, message: str) -> None:
+    async def __call__(self, target: str, message: str, parse_mode: str = "") -> None:
         self.calls.append((target, message))
 
 

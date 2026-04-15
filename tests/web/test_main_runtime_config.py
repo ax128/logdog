@@ -150,7 +150,7 @@ def test_main_app_uses_app_config_docker_pool_limits_when_not_explicit(
 def test_global_schedule_notify_target_overrides_global_notify_targets() -> None:
     sent_targets: list[str] = []
 
-    async def telegram_send(target: str, _message: str) -> None:
+    async def telegram_send(target: str, _message: str, parse_mode: str = "") -> None:
         sent_targets.append(target)
 
     notifiers = main_module._build_global_schedule_notifiers(
@@ -185,10 +185,10 @@ def test_global_schedule_notify_target_supports_weixin_and_wecom() -> None:
     weixin_targets: list[str] = []
     wecom_targets: list[str] = []
 
-    async def weixin_send(target: str, _message: str) -> None:
+    async def weixin_send(target: str, _message: str, parse_mode: str = "") -> None:
         weixin_targets.append(target)
 
-    async def wecom_send(target: str, _message: str) -> None:
+    async def wecom_send(target: str, _message: str, parse_mode: str = "") -> None:
         wecom_targets.append(target)
 
     notifiers = main_module._build_global_schedule_notifiers(
@@ -222,7 +222,7 @@ def test_global_schedule_notify_target_supports_weixin_and_wecom() -> None:
 def test_main_app_notify_router_supports_global_reload_notifications() -> None:
     sent_targets: list[str] = []
 
-    async def telegram_send(target: str, _message: str) -> None:
+    async def telegram_send(target: str, _message: str, parse_mode: str = "") -> None:
         sent_targets.append(target)
 
     app = create_app(
