@@ -77,6 +77,14 @@ def test_json_extract_zero_value_field_included():
     assert "status=0" in content
 
 
+def test_json_extract_empty_string_field_excluded():
+    # Empty string values should not appear in output
+    line = _line(_j({"level": "", "message": "service started"}))
+    content = JsonExtractPreprocessor().process([line])[0].content
+    assert "level=" not in content
+    assert "message=service started" in content
+
+
 def test_json_extract_marks_metadata():
     line = _line(_j({"message": "ok"}))
     assert JsonExtractPreprocessor().process([line])[0].metadata.get("json_parsed") is True

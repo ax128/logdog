@@ -153,7 +153,13 @@ def _load_preprocessor_from_file(
         )
         return None
     candidate = getattr(module, "PREPROCESSOR", None)
-    preprocessor = _coerce_preprocessor(candidate, config=config)
+    try:
+        preprocessor = _coerce_preprocessor(candidate, config=config)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Skipping invalid preprocessor module: %s (%s)", module_path.name, exc
+        )
+        return None
     if preprocessor is None:
         logger.warning("Skipping invalid preprocessor module: %s", module_path.name)
         return None

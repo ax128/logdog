@@ -8,6 +8,9 @@ class DedupPreprocessor(BasePreprocessor):
 
     Config keys:
         max_consecutive (int, default 3): runs longer than this are collapsed.
+
+    Note: deduplication is applied within each batch only; consecutive identical
+    lines arriving in separate process() calls are not collapsed.
     """
 
     name = "dedup"

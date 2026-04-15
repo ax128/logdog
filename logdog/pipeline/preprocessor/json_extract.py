@@ -47,7 +47,7 @@ class JsonExtractPreprocessor(BasePreprocessor):
             parts = [
                 f"{f}={parsed[f]}"
                 for f in self._fields
-                if f in parsed and parsed[f] is not None
+                if f in parsed and parsed[f] is not None and parsed[f] != ""
             ]
             json_level = str(parsed.get("level") or "").strip().lower() or None
             result.append(LogLine(
