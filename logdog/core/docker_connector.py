@@ -348,6 +348,22 @@ class DockerClientPool:
             host, _restart_container_operation(container_id, timeout=timeout)
         )
 
+    async def exec_container_for_host(
+        self,
+        host: dict[str, Any],
+        container: dict[str, Any],
+        *,
+        command: str,
+        max_output_chars: int = 2000,
+    ) -> dict[str, Any]:
+        container_id = _container_id(container)
+        return await self._run(
+            host,
+            _exec_container_operation(
+                container_id, command=command, max_output_chars=max_output_chars
+            ),
+        )
+
     async def close_all(self) -> None:
         async with self._lock:
             streams = list(self._active_streams.values())
@@ -551,6 +567,19 @@ async def restart_container_for_host(
     container_id = _container_id(container)
     return await _run_with_client(
         host, _restart_container_operation(container_id, timeout=timeout)
+    )
+
+
+async def exec_container_for_host(
+    host: dict[str, Any],
+    container: dict[str, Any],
+    *,
+    command: str,
+    max_output_chars: int = 2000,
+) -> dict[str, Any]:
+    container_id = _container_id(container)
+    return await _run_with_client(
+        host, _exec_container_operation(container_id, command=command, max_output_chars=max_output_chars)
     )
 
 
@@ -839,6 +868,53 @@ def _restart_container_operation(container_id: str, *, timeout: int = 10):
             "container_name": container_name,
             "timeout": restart_timeout,
             "restarted": True,
+        }
+
+    return operation
+
+
+def _exec_container_operation(
+    container_id: str, *, command: str, max_output_chars: int = 2000
+):
+    """Return an operation that runs a command inside a container via exec_run."""
+    if not str(command or "").strip():
+        raise ValueError("command must not be empty")
+    _max = int(max_output_chars)
+
+    def operation(client: Any) -> dict[str, Any]:
+        container_obj = client.containers.get(container_id)
+        container_name = str(getattr(container_obj, "name", "") or container_id)
+        exit_code, output = container_obj.exec_run(command, demux=True)
+        exit_code_int = int(exit_code) if exit_code is not None else -1
+
+        # output is a (stdout_bytes, stderr_bytes) tuple when demux=True.
+        stdout_bytes, stderr_bytes = (
+            output if isinstance(output, tuple) else (output, None)
+        )
+
+        def _decode(b: Any) -> str:
+            if b is None:
+                return ""
+            if isinstance(b, bytes):
+                return b.decode("utf-8", errors="replace")
+            return str(b)
+
+        stdout_text = _decode(stdout_bytes)
+        stderr_text = _decode(stderr_bytes)
+
+        # Truncate combined output to stay within caller-defined char limit.
+        combined = stdout_text
+        if stderr_text:
+            combined = combined + ("" if not combined else "\n") + stderr_text
+        if len(combined) > _max:
+            combined = combined[:_max] + f"\n[truncated at {_max} chars]"
+
+        return {
+            "container_id": container_id,
+            "container_name": container_name,
+            "command": command,
+            "exit_code": exit_code_int,
+            "output": combined,
         }
 
     return operation

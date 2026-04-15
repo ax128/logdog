@@ -152,6 +152,10 @@ async def test_tool_registry_invokes_all_task6_tools_and_audits_calls() -> None:
         "mute_alert",
         "unmute_alert",
         "restart_container",
+        "get_system_metrics",
+        "list_alert_mutes",
+        "get_storm_events",
+        "exec_container",
     }
     assert registry["query_logs"].read_only is True
     assert registry["restart_container"].read_only is False
@@ -232,8 +236,19 @@ async def test_tool_registry_invokes_all_task6_tools_and_audits_calls() -> None:
     restarted_data = json.loads(restarted.content)
     assert restarted_data["result"]["container_id"] == "c1"
     assert restart_calls == [{"host": "prod-a", "container_id": "c1", "timeout": 15}]
+    # 8 original tools were invoked in this test (4 new tools are tested separately)
     assert len(writer.audit_calls) == 8
-    assert {payload["tool"] for payload, _, _ in writer.audit_calls} == set(registry)
+    invoked_tools = {payload["tool"] for payload, _, _ in writer.audit_calls}
+    assert invoked_tools == {
+        "list_hosts",
+        "list_containers",
+        "query_logs",
+        "get_metrics",
+        "get_alerts",
+        "mute_alert",
+        "unmute_alert",
+        "restart_container",
+    }
     assert all(payload["status"] == "ok" for payload, _, _ in writer.audit_calls)
     assert any("bearer" in pattern.lower() for pattern in writer.audit_calls[0][1])
 

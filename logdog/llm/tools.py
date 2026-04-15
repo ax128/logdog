@@ -13,6 +13,7 @@ from logdog.llm.tool_types import ToolResult
 
 from logdog.core.db import query_metrics
 from logdog.core.docker_connector import (
+    exec_container_for_host,
     list_containers_for_host,
     query_container_logs,
     restart_container_for_host,
@@ -177,6 +178,10 @@ def create_tool_registry(
     query_logs_fn: Any | None = None,
     query_metrics_fn: Any | None = None,
     restart_container_fn: Any | None = None,
+    exec_container_fn: Any | None = None,
+    list_mutes_fn: Any | None = None,
+    list_storm_events_fn: Any | None = None,
+    query_host_metrics_fn: Any | None = None,
     time_fn: Callable[[], float] | None = None,
 ) -> dict[str, AgentTool]:
     tools_cfg = _resolve_llm_tools_config(app_config)
@@ -347,6 +352,67 @@ def create_tool_registry(
             await _maybe_await(
                 restart_container_for_host(host, container, timeout=timeout)
             )
+        )
+
+    async def exec_container_op(
+        host: dict[str, Any],
+        container: dict[str, Any],
+        *,
+        command: str,
+    ) -> dict[str, Any]:
+        if exec_container_fn is not None:
+            return dict(
+                await _maybe_await(exec_container_fn(host, container, command=command))
+            )
+        if docker_client_pool is not None and callable(
+            getattr(docker_client_pool, "exec_container_for_host", None)
+        ):
+            return dict(
+                await _maybe_await(
+                    docker_client_pool.exec_container_for_host(
+                        host, container, command=command
+                    )
+                )
+            )
+        return dict(
+            await _maybe_await(exec_container_for_host(host, container, command=command))
+        )
+
+    async def list_mutes_op(writer: Any, *, limit: int) -> list[dict[str, Any]]:
+        if list_mutes_fn is not None:
+            return list(await _maybe_await(list_mutes_fn(writer, limit=limit)))
+        return list(await _maybe_await(writer.list_mutes(limit=limit)))
+
+    async def list_storm_events_op(
+        writer: Any,
+        *,
+        limit: int,
+        category: str | None,
+    ) -> list[dict[str, Any]]:
+        if list_storm_events_fn is not None:
+            return list(
+                await _maybe_await(
+                    list_storm_events_fn(writer, limit=limit, category=category)
+                )
+            )
+        return list(
+            await _maybe_await(writer.list_storm_events(limit=limit, category=category))
+        )
+
+    async def query_host_metrics_op(
+        writer: Any,
+        *,
+        host_name: str,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        if query_host_metrics_fn is not None:
+            return list(
+                await _maybe_await(
+                    query_host_metrics_fn(writer, host_name=host_name, limit=limit)
+                )
+            )
+        return list(
+            await _maybe_await(writer.query_host_metrics(host_name=host_name, limit=limit))
         )
 
     async def guarded_invoke(
@@ -572,6 +638,63 @@ def create_tool_registry(
         result = await restart_container_op(host, container, timeout=timeout)
         return ToolResult.ok(json.dumps({"ok": True, "result": result}))
 
+    async def get_system_metrics_handler(
+        arguments: dict[str, Any], writer: Any
+    ) -> ToolResult:
+        host_name = _require_non_empty_str(
+            arguments.get("host_name") or arguments.get("host"), field_name="host_name"
+        )
+        limit = _coerce_bounded_int(
+            arguments.get("limit"),
+            default=20,
+            max_value=MAX_TOOL_METRICS_LIMIT,
+            field_name="limit",
+        )
+        points = await query_host_metrics_op(writer, host_name=host_name, limit=limit)
+        return ToolResult.ok(json.dumps({"host_name": host_name, "points": points}))
+
+    async def list_alert_mutes_handler(
+        arguments: dict[str, Any], writer: Any
+    ) -> ToolResult:
+        limit = _coerce_bounded_int(
+            arguments.get("limit"),
+            default=50,
+            max_value=MAX_TOOL_ALERTS_LIMIT,
+            field_name="limit",
+        )
+        mutes = await list_mutes_op(writer, limit=limit)
+        return ToolResult.ok(json.dumps({"mutes": mutes}))
+
+    async def get_storm_events_handler(
+        arguments: dict[str, Any], writer: Any
+    ) -> ToolResult:
+        limit = _coerce_bounded_int(
+            arguments.get("limit"),
+            default=20,
+            max_value=MAX_TOOL_ALERTS_LIMIT,
+            field_name="limit",
+        )
+        category = str(arguments.get("category") or "").strip() or None
+        events = await list_storm_events_op(writer, limit=limit, category=category)
+        return ToolResult.ok(json.dumps({"events": events}))
+
+    async def exec_container_handler(
+        arguments: dict[str, Any], _writer: Any
+    ) -> ToolResult:
+        # Permission layer already verifies confirmed; this is a defence-in-depth guard.
+        if not bool(arguments.get("confirmed")):
+            raise ValueError("confirmed must be True to execute exec_container")
+        host = _require_host_config(host_manager, arguments)
+        container_id = _require_non_empty_str(
+            arguments.get("container_id"), field_name="container_id"
+        )
+        command = _require_non_empty_str(arguments.get("command"), field_name="command")
+        container = await _resolve_container(
+            host, container_id=container_id, list_containers_op=list_containers_op
+        )
+        result = await exec_container_op(host, container, command=command)
+        return ToolResult.ok(json.dumps({"ok": True, "result": result}))
+
     return {
         "list_hosts": AgentTool(
             name="list_hosts",
@@ -667,6 +790,66 @@ def create_tool_registry(
                 user_id=user_id,
                 arguments=arguments,
                 handler=restart_container_handler,
+            ),
+        ),
+        "get_system_metrics": AgentTool(
+            name="get_system_metrics",
+            description=(
+                "Query host system metrics (CPU, memory, disk, load). "
+                "Parameters: host_name (str), limit (int, default 20)."
+            ),
+            read_only=True,
+            _invoke=lambda user_id, arguments: guarded_invoke(
+                "get_system_metrics",
+                read_only=True,
+                user_id=user_id,
+                arguments=arguments,
+                handler=get_system_metrics_handler,
+            ),
+        ),
+        "list_alert_mutes": AgentTool(
+            name="list_alert_mutes",
+            description=(
+                "List currently active alert mute rules. "
+                "Parameters: limit (int, default 50)."
+            ),
+            read_only=True,
+            _invoke=lambda user_id, arguments: guarded_invoke(
+                "list_alert_mutes",
+                read_only=True,
+                user_id=user_id,
+                arguments=arguments,
+                handler=list_alert_mutes_handler,
+            ),
+        ),
+        "get_storm_events": AgentTool(
+            name="get_storm_events",
+            description=(
+                "Query alert storm event records. "
+                "Parameters: limit (int, default 20), category (str, optional)."
+            ),
+            read_only=True,
+            _invoke=lambda user_id, arguments: guarded_invoke(
+                "get_storm_events",
+                read_only=True,
+                user_id=user_id,
+                arguments=arguments,
+                handler=get_storm_events_handler,
+            ),
+        ),
+        "exec_container": AgentTool(
+            name="exec_container",
+            description=(
+                "Execute a command inside a container (dangerous, requires allowlisted host and confirmed=True). "
+                "Parameters: host (str), container_id (str), command (str), confirmed (bool)."
+            ),
+            read_only=False,
+            _invoke=lambda user_id, arguments: guarded_invoke(
+                "exec_container",
+                read_only=False,
+                user_id=user_id,
+                arguments=arguments,
+                handler=exec_container_handler,
             ),
         ),
     }

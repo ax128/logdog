@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 
 
-DEFAULT_DANGEROUS_TOOLS = frozenset({"restart_container"})
+DEFAULT_DANGEROUS_TOOLS = frozenset({"restart_container", "exec_container"})
 DEFAULT_CONFIRMATION_FIELDS = ("confirmed", "confirmation")
 TRUTHY_CONFIRMATION_VALUES = frozenset({"1", "true", "yes", "confirm", "confirmed"})
 

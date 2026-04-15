@@ -88,4 +88,8 @@ def test_main_app_exposes_tool_registry_on_app_state() -> None:
         "mute_alert",
         "unmute_alert",
         "restart_container",
+        "get_system_metrics",
+        "list_alert_mutes",
+        "get_storm_events",
+        "exec_container",
     }
