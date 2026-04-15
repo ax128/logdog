@@ -9,6 +9,8 @@ chmod 700 /root/.ssh
 # Scan all SSH host URLs from config (extract host:port from ssh:// URLs)
 if [ -f /app/config/logdog.yaml ]; then
     grep -oP 'ssh://[^@]+@\K[^/\s"]+' /app/config/logdog.yaml 2>/dev/null | while read -r hostport; do
+        # Skip unexpanded env var references
+        case "$hostport" in *'${'*) continue ;; esac
         host="${hostport%%:*}"
         port="${hostport##*:}"
         if [ "$port" = "$host" ]; then

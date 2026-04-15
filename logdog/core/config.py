@@ -44,12 +44,18 @@ _INT_LIKE_PATTERN = re.compile(r"^[+-]?\d+$")
 _ENV_VAR_PATTERN = re.compile(r"\$\{([^}]+)\}")
 
 
+def _resolve_env_ref(expr: str) -> str:
+    """Resolve ``${VAR}`` or ``${VAR:-default}`` expressions."""
+    if ":-" in expr:
+        var, _, default = expr.partition(":-")
+        return os.environ.get(var.strip(), default)
+    return os.environ.get(expr.strip(), "")
+
+
 def _expand_env_vars(value: Any) -> Any:
-    """Recursively expand ``${VAR}`` references in string values."""
+    """Recursively expand ``${VAR}`` and ``${VAR:-default}`` in string values."""
     if isinstance(value, str):
-        return _ENV_VAR_PATTERN.sub(
-            lambda m: os.environ.get(m.group(1), ""), value
-        )
+        return _ENV_VAR_PATTERN.sub(lambda m: _resolve_env_ref(m.group(1)), value)
     if isinstance(value, dict):
         return {k: _expand_env_vars(v) for k, v in value.items()}
     if isinstance(value, list):
