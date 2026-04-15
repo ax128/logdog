@@ -4,6 +4,7 @@ import contextvars
 import hashlib
 import importlib
 import logging
+import time
 from typing import Any, Callable, Mapping
 
 from langchain_core.messages import HumanMessage
@@ -336,6 +337,178 @@ def _wrap_registered_tool(tool: Any) -> Any:
         return StructuredTool.from_function(**st_kwargs)
 
 
+def _import_base_checkpointer_saver() -> type | None:
+    """Import BaseCheckpointSaver if langgraph is available, else return None."""
+    try:
+        from langgraph.checkpoint.base import BaseCheckpointSaver  # type: ignore[import-untyped]
+        return BaseCheckpointSaver
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _make_bounded_checkpointer_class() -> type:
+    """Build _BoundedCheckpointer inheriting from BaseCheckpointSaver when available.
+
+    Deferring class construction to runtime lets the module load without langgraph
+    installed, while still satisfying LangGraph's isinstance check at agent-build time.
+    """
+    base = _import_base_checkpointer_saver() or object
+
+    class _BoundedCheckpointer(base):  # type: ignore[valid-type,misc]
+        """Wraps a checkpointer with per-thread TTL and a hard cap on total sessions.
+
+        Eviction runs on every write (``put`` / ``aput``) so the memory footprint
+        stays bounded without requiring a background task:
+
+        - Sessions not written to within *ttl_seconds* are evicted.
+        - When the live session count exceeds *max_sessions*, the oldest sessions
+          (by last-write time) are evicted first.
+
+        Thread deletion is delegated to ``inner.delete_thread`` so all storage
+        structures (``storage``, ``writes``, ``blobs``) are cleaned up correctly.
+        All other attribute access is transparently forwarded to *inner*.
+        """
+
+        _EVICT_EVERY_N = 10  # run full TTL scan only every N writes
+
+        def __init__(
+            self,
+            inner: Any,
+            *,
+            max_sessions: int = 100,
+            ttl_seconds: float = 3600.0,
+        ) -> None:
+            # Do NOT call super().__init__() — BaseCheckpointSaver sets self.serde
+            # which would conflict with our delegation via __getattr__.
+            self._inner = inner
+            self._max_sessions = max_sessions
+            self._ttl_seconds = ttl_seconds
+            self._access_times: dict[str, float] = {}
+            self._write_count = 0
+
+        # ------------------------------------------------------------------
+        # Eviction helpers
+        # ------------------------------------------------------------------
+
+        def _record_access(self, thread_id: str) -> None:
+            """Update the access timestamp for *thread_id* and trigger eviction."""
+            self._access_times[thread_id] = time.monotonic()
+            self._write_count += 1
+            # Full TTL scan is relatively cheap but not needed every write.
+            if self._write_count % self._EVICT_EVERY_N == 0:
+                self._evict_expired()
+            self._evict_over_limit()
+
+        def _delete_thread(self, thread_id: str) -> None:
+            self._access_times.pop(thread_id, None)
+            delete_fn = getattr(self._inner, "delete_thread", None)
+            if callable(delete_fn):
+                try:
+                    delete_fn(thread_id)
+                except Exception:  # noqa: BLE001
+                    logger.warning(
+                        "bounded checkpointer: delete_thread failed for %s",
+                        thread_id,
+                        exc_info=True,
+                    )
+
+        def _evict_expired(self) -> None:
+            now = time.monotonic()
+            expired = [
+                k for k, t in self._access_times.items()
+                if (now - t) > self._ttl_seconds
+            ]
+            for thread_id in expired:
+                logger.debug("bounded checkpointer: evicting expired session %s", thread_id)
+                self._delete_thread(thread_id)
+
+        def _evict_over_limit(self) -> None:
+            over = len(self._access_times) - self._max_sessions
+            if over <= 0:
+                return
+            # Evict the *over* oldest sessions.
+            sorted_keys = sorted(self._access_times, key=lambda k: self._access_times[k])
+            for thread_id in sorted_keys[:over]:
+                logger.debug("bounded checkpointer: evicting over-limit session %s", thread_id)
+                self._delete_thread(thread_id)
+
+        # ------------------------------------------------------------------
+        # Thread-id extraction
+        # ------------------------------------------------------------------
+
+        @staticmethod
+        def _thread_id_from_config(config: Any) -> str:
+            if isinstance(config, dict):
+                configurable = config.get("configurable", {})
+                if isinstance(configurable, dict):
+                    return str(configurable.get("thread_id", ""))
+            return ""
+
+        # ------------------------------------------------------------------
+        # Delegated BaseCheckpointSaver methods (read path)
+        # ------------------------------------------------------------------
+
+        def get_tuple(self, config: Any) -> Any:
+            return self._inner.get_tuple(config)
+
+        def list(self, config: Any, **kwargs: Any) -> Any:
+            return self._inner.list(config, **kwargs)
+
+        async def aget_tuple(self, config: Any) -> Any:
+            return await self._inner.aget_tuple(config)
+
+        async def alist(self, config: Any, **kwargs: Any) -> Any:
+            return self._inner.alist(config, **kwargs)
+
+        def get_next_version(self, current: Any, channel: Any) -> Any:
+            return self._inner.get_next_version(current, channel)
+
+        # ------------------------------------------------------------------
+        # Intercepted write methods (track + evict on every write)
+        # ------------------------------------------------------------------
+
+        def put(self, config: Any, *args: Any, **kwargs: Any) -> Any:
+            result = self._inner.put(config, *args, **kwargs)
+            thread_id = self._thread_id_from_config(config)
+            if thread_id:
+                self._record_access(thread_id)
+            return result
+
+        async def aput(self, config: Any, *args: Any, **kwargs: Any) -> Any:
+            result = await self._inner.aput(config, *args, **kwargs)
+            thread_id = self._thread_id_from_config(config)
+            if thread_id:
+                self._record_access(thread_id)
+            return result
+
+        def put_writes(self, config: Any, *args: Any, **kwargs: Any) -> Any:
+            result = self._inner.put_writes(config, *args, **kwargs)
+            thread_id = self._thread_id_from_config(config)
+            if thread_id:
+                self._record_access(thread_id)
+            return result
+
+        async def aput_writes(self, config: Any, *args: Any, **kwargs: Any) -> Any:
+            result = await self._inner.aput_writes(config, *args, **kwargs)
+            thread_id = self._thread_id_from_config(config)
+            if thread_id:
+                self._record_access(thread_id)
+            return result
+
+        # ------------------------------------------------------------------
+        # Transparent delegation for any remaining attributes
+        # ------------------------------------------------------------------
+
+        def __getattr__(self, name: str) -> Any:  # pragma: no cover
+            return getattr(self._inner, name)
+
+    return _BoundedCheckpointer
+
+
+# Module-level class built once at import time.
+_BoundedCheckpointer = _make_bounded_checkpointer_class()
+
+
 def _build_checkpointer(
     checkpointer_factory: Callable[[], Any] | None,
 ) -> Any | None:
@@ -343,7 +516,8 @@ def _build_checkpointer(
     if factory is None:
         return None
     try:
-        return factory()
+        inner = factory()
+        return _BoundedCheckpointer(inner)
     except Exception:  # noqa: BLE001 - runtime can still operate without memory backend
         logger.warning("chat runtime checkpointer creation failed", exc_info=True)
         return None
