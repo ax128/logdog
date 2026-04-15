@@ -102,9 +102,10 @@ class TelegramBotTokenSender:
         self, chat_id: str, text: str, parse_mode: str = ""
     ) -> Any:
         effective_parse_mode = str(parse_mode or "").strip()
-        if effective_parse_mode == "Markdown" and telegram_markdown_unsafe(text):
+        truncated = str(text)[:4096]
+        if effective_parse_mode == "Markdown" and telegram_markdown_unsafe(truncated):
             effective_parse_mode = ""
-        payload: dict[str, Any] = {"chat_id": chat_id, "text": str(text)}
+        payload: dict[str, Any] = {"chat_id": chat_id, "text": truncated}
         if effective_parse_mode:
             payload["parse_mode"] = effective_parse_mode
         try:
@@ -404,7 +405,7 @@ def build_telegram_bot_token_sender(
     *,
     timeout_seconds: float = 10.0,
     auto_chat_cache_ttl_seconds: float = 300.0,
-) -> Callable[[str, str], None] | None:
+) -> Callable[..., None] | None:
     normalized = str(bot_token or "").strip()
     if normalized == "":
         return None
@@ -706,8 +707,12 @@ def _load_handler_binder() -> Callable[[Any, Any], None] | None:
     if message_handler_cls is None or filters_obj is None:
         return None
 
+    document_filter = getattr(getattr(filters_obj, "Document", None), "ALL", None)
+    text_filter = filters_obj.TEXT
+    combined_filter = (text_filter | document_filter) if document_filter is not None else text_filter
+
     def binder(application: Any, callback: Any) -> None:
-        application.add_handler(message_handler_cls(filters_obj.TEXT, callback))
+        application.add_handler(message_handler_cls(combined_filter, callback))
 
     return binder
 

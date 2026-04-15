@@ -2247,7 +2247,10 @@ def _merge_send_funcs(send_funcs: list[Any]) -> Any:
         first_exc: Exception | None = None
         for send_func in send_funcs:
             try:
-                result = send_func(target, message, parse_mode)
+                try:
+                    result = send_func(target, message, parse_mode)
+                except TypeError:
+                    result = send_func(target, message)
                 if inspect.isawaitable(result):
                     await result
             except Exception as exc:  # noqa: BLE001
@@ -2363,7 +2366,10 @@ def _build_multi_target_send_func(send_func: Any, targets: list[str]):
         first_exc: Exception | None = None
         for target in pending_targets:
             try:
-                result = send_func(target, message, parse_mode)
+                try:
+                    result = send_func(target, message, parse_mode)
+                except TypeError:
+                    result = send_func(target, message)
                 if inspect.isawaitable(result):
                     await result
             except Exception as exc:  # noqa: BLE001
