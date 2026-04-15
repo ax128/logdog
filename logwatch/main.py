@@ -195,7 +195,7 @@ def create_app(
     resolved_telegram_send_func = telegram_send_func
     if resolved_telegram_send_func is None:
         resolved_telegram_send_func = build_telegram_bot_token_sender(
-            _resolve_telegram_bot_token()
+            _resolve_telegram_bot_token(current_app_config)
         )
     if resolved_wecom_send_func is None:
         resolved_wecom_send_func = build_wecom_webhook_sender()
@@ -2433,8 +2433,37 @@ def _resolve_notify_targets_with_aliases(
     return [item.strip() for item in env_value.split(",") if item.strip()]
 
 
-def _resolve_telegram_bot_token() -> str:
-    return os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+def _resolve_telegram_bot_token(app_config: dict[str, Any] | None = None) -> str:
+    """Resolve the Telegram bot token.
+
+    Priority: TELEGRAM_BOT_TOKEN env var > first bot_token from notify channel config.
+    """
+    env_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+    if env_token:
+        return env_token
+    if not isinstance(app_config, dict):
+        return ""
+    notify_cfg = app_config.get("notify")
+    if not isinstance(notify_cfg, dict):
+        return ""
+    # Check built-in telegram config
+    telegram_cfg = notify_cfg.get("telegram")
+    if isinstance(telegram_cfg, dict):
+        tokens = _resolve_telegram_bot_tokens(telegram_cfg)
+        if tokens:
+            return tokens[0]
+    # Check named channels for the first telegram channel with a token
+    channels_cfg = notify_cfg.get("channels")
+    if isinstance(channels_cfg, dict):
+        for _name, ch_cfg in channels_cfg.items():
+            if not isinstance(ch_cfg, dict):
+                continue
+            if str(ch_cfg.get("type") or "").strip().lower() != "telegram":
+                continue
+            tokens = _resolve_telegram_bot_tokens(ch_cfg)
+            if tokens:
+                return tokens[0]
+    return ""
 
 
 def _resolve_authorized_telegram_users(
@@ -2466,7 +2495,7 @@ def _build_telegram_runtime_from_config(
     telegram_handler_binder: Any | None = None,
 ):
     authorized_telegram_users = _resolve_authorized_telegram_users(app_config)
-    telegram_bot_token = _resolve_telegram_bot_token()
+    telegram_bot_token = _resolve_telegram_bot_token(app_config)
     if telegram_bot_token and not authorized_telegram_users:
         logger.warning(
             "Telegram Bot enabled but no authorized users configured — all messages will be rejected"
