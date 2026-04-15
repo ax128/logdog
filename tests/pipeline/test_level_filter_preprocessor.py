@@ -38,7 +38,8 @@ def test_level_filter_min_error_drops_warn():
 
 def test_level_filter_min_debug_keeps_all():
     lines = [_line("x", level=lv) for lv in ["debug", "info", "warn", "error"]]
-    assert len(LevelFilterPreprocessor(config={"min_level": "debug"}).process(lines)) == 4
+    result = LevelFilterPreprocessor(config={"min_level": "debug"}).process(lines)
+    assert [l.level for l in result] == ["debug", "info", "warn", "error"]
 
 
 def test_level_filter_unknown_level_kept_fail_open():
@@ -49,8 +50,9 @@ def test_level_filter_unknown_level_kept_fail_open():
 def test_level_filter_detects_level_from_content():
     lines = [_line("[DEBUG] boot"), _line("[WARN] disk high"), _line("[ERROR] conn refused")]
     result = LevelFilterPreprocessor().process(lines)   # default min=warn
-    assert len(result) == 2
-    assert "WARN" in result[0].content
+    assert result[0].content == "[WARN] disk high"
+    assert result[1].content == "[ERROR] conn refused"
+
 
 def test_level_filter_warning_alias():
     line = _line("msg", level="warning")

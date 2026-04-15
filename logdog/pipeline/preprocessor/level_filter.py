@@ -42,7 +42,9 @@ class LevelFilterPreprocessor(BasePreprocessor):
         self._min_order: int = _LEVEL_ORDER.get(raw, _LEVEL_ORDER["warn"])
 
     def process(self, lines: list[LogLine]) -> list[LogLine]:
-        return [
-            line for line in lines
-            if _level_order(line) == _UNKNOWN or _level_order(line) >= self._min_order
-        ]
+        result = []
+        for line in lines:
+            order = _level_order(line)
+            if order == _UNKNOWN or order >= self._min_order:
+                result.append(line)
+        return result
