@@ -67,6 +67,7 @@ class _DedupWindow:
     prompt_template: str
     output_template: str
     analysis_mode: str
+    llm_model: str | None
     notifier_send: Any
     save_alert: Any
     mute_checker: Any
@@ -109,6 +110,7 @@ def _schedule_dedup_summary(
     prompt_template: str,
     output_template: str,
     analysis_mode: str,
+    llm_model: str | None = None,
     notifier_send: Any,
     save_alert: Any,
     mute_checker: Any,
@@ -131,6 +133,7 @@ def _schedule_dedup_summary(
                 prompt_template=prompt_template,
                 output_template=output_template,
                 analysis_mode=analysis_mode,
+                llm_model=llm_model,
                 notifier_send=notifier_send,
                 save_alert=save_alert,
                 mute_checker=mute_checker,
@@ -142,6 +145,7 @@ def _schedule_dedup_summary(
             existing.prompt_template = prompt_template
             existing.output_template = output_template
             existing.analysis_mode = analysis_mode
+            existing.llm_model = llm_model
             existing.notifier_send = notifier_send
             existing.save_alert = save_alert
             existing.mute_checker = mute_checker
@@ -224,6 +228,7 @@ async def _flush_dedup_summary_after_delay(
             context,
             window.prompt_template,
             enable_agent=True,
+            model=window.llm_model,
         )
     else:
         analysis = analyze_with_template(
@@ -231,6 +236,7 @@ async def _flush_dedup_summary_after_delay(
             context,
             window.prompt_template,
             enable_agent=False,
+            model=window.llm_model,
         )
     message = _render_notification_message(
         output_template=window.output_template,
@@ -342,6 +348,7 @@ async def run_alert_once(
     check_time = float(time.time() if now is None else now)
     dedup_key = (host, container_id, rule.matched_category)
     analysis_mode = _resolve_alert_analysis_mode(cfg)
+    _llm_model = (cfg.get("llm") or {}).get("model") if isinstance(cfg.get("llm"), dict) else None
 
     if mute_checker is not None:
         try:
@@ -442,6 +449,7 @@ async def run_alert_once(
                 prompt_template=prompt_template,
                 output_template=output_template,
                 analysis_mode=analysis_mode,
+                llm_model=_llm_model,
                 notifier_send=notifier_send,
                 save_alert=save_alert,
                 mute_checker=mute_checker,
@@ -503,6 +511,7 @@ async def run_alert_once(
             context,
             prompt_template,
             enable_agent=True,
+            model=_llm_model,
         )
     else:
         analysis = analyze_with_template(
@@ -510,6 +519,7 @@ async def run_alert_once(
             context,
             prompt_template,
             enable_agent=False,
+            model=_llm_model,
         )
     message = _render_notification_message(
         output_template=output_template,
@@ -817,20 +827,34 @@ class LogStreamWatcher:
             prompt = str(matched["prompt_template"])
         if "output_template" in matched:
             output = str(matched["output_template"])
-        if "rules" in matched:
-            # Merge: host rules as base, override rules on top
+        needs_config_merge = "rules" in matched or "llm" in matched
+        if needs_config_merge:
             merged_config = deepcopy(config)
-            override_rules = matched["rules"]
-            if isinstance(override_rules, dict):
-                existing_rules = merged_config.get("rules") or {}
-                if not isinstance(existing_rules, dict):
-                    existing_rules = {}
-                merged_rules = dict(existing_rules)
-                # For list fields, override replaces
-                for key in ("ignore", "redact", "custom_alerts", "alert_keywords"):
-                    if key in override_rules:
-                        merged_rules[key] = override_rules[key]
-                merged_config["rules"] = merged_rules
+
+            if "rules" in matched:
+                # Merge: host rules as base, override rules on top
+                override_rules = matched["rules"]
+                if isinstance(override_rules, dict):
+                    existing_rules = merged_config.get("rules") or {}
+                    if not isinstance(existing_rules, dict):
+                        existing_rules = {}
+                    merged_rules = dict(existing_rules)
+                    # For list fields, override replaces
+                    for key in ("ignore", "redact", "custom_alerts", "alert_keywords"):
+                        if key in override_rules:
+                            merged_rules[key] = override_rules[key]
+                    merged_config["rules"] = merged_rules
+
+            if "llm" in matched:
+                override_llm = matched["llm"]
+                if isinstance(override_llm, dict):
+                    existing_llm = merged_config.get("llm") or {}
+                    if not isinstance(existing_llm, dict):
+                        existing_llm = {}
+                    merged_llm = dict(existing_llm)
+                    merged_llm.update(override_llm)
+                    merged_config["llm"] = merged_llm
+
             config = merged_config
 
         return prompt, output, config

@@ -95,3 +95,33 @@ def test_analyzer_returns_rendered_prompt_when_runtime_factory_fails() -> None:
     )
 
     assert out == "prompt::prod-a::api"
+
+
+def test_analyze_with_template_passes_model_kwarg() -> None:
+    """Verify model parameter is accepted and forwarded without error."""
+    runtime = _RecordingRuntime(response="model-answer")
+
+    out = analyze_with_template(
+        "alert",
+        _alert_context(),
+        _StaticTemplate(),
+        agent_runtime=runtime,
+        model="openai:gpt-4o",
+    )
+
+    # When agent_runtime is provided directly, model is unused but must not error
+    assert out == "model-answer"
+
+
+def test_analyze_with_template_model_kwarg_no_agent() -> None:
+    """Verify model parameter works with enable_agent=False."""
+    out = analyze_with_template(
+        "alert",
+        _alert_context(),
+        _StaticTemplate(),
+        enable_agent=False,
+        model="openai:gpt-4o",
+    )
+
+    # Should return rendered prompt directly (no agent invocation)
+    assert out == "prompt::prod-a::api"

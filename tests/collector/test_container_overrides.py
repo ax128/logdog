@@ -111,3 +111,44 @@ class TestResolveContainerConfig:
         assert rules["alert_keywords"] == ["error", "5xx"]
         assert rules["ignore"] == ["healthcheck"]  # kept from host
         assert len(rules["redact"]) == 1  # kept from host
+
+    def test_llm_override_merges_with_host(self) -> None:
+        watcher = _make_watcher({
+            "name": "prod",
+            "llm": {
+                "enabled": True,
+                "model": "openai:gpt-4o",
+            },
+            "containers": {
+                "overrides": {
+                    "api": {
+                        "llm": {
+                            "model": "openai:gpt-4o-mini",
+                        }
+                    }
+                }
+            },
+        })
+        _prompt, _output, config = watcher._resolve_container_config("api")
+        llm = config.get("llm", {})
+        assert llm["model"] == "openai:gpt-4o-mini"
+        assert llm["enabled"] is True  # preserved from host
+
+    def test_llm_override_without_host_llm(self) -> None:
+        watcher = _make_watcher({
+            "name": "prod",
+            "containers": {
+                "overrides": {
+                    "api": {
+                        "llm": {
+                            "enabled": True,
+                            "model": "openai:gpt-4o-mini",
+                        }
+                    }
+                }
+            },
+        })
+        _prompt, _output, config = watcher._resolve_container_config("api")
+        llm = config.get("llm", {})
+        assert llm["model"] == "openai:gpt-4o-mini"
+        assert llm["enabled"] is True
