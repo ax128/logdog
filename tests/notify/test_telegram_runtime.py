@@ -11,7 +11,7 @@ class _FakeUpdater:
     def __init__(self, events: list[str]) -> None:
         self._events = events
 
-    async def start_polling(self) -> None:
+    async def start_polling(self, **_kw) -> None:
         self._events.append("polling:start")
 
     async def stop(self) -> None:
@@ -49,6 +49,7 @@ class _FailingStartApplication(_FakeApplication):
 class _RecordingChatRuntime:
     def __init__(self) -> None:
         self.calls: list[dict[str, str]] = []
+        self.is_available = True
 
     def invoke_text(
         self,
@@ -67,6 +68,40 @@ class _RecordingChatRuntime:
             }
         )
         return f"agent::{prompt}"
+
+    async def ainvoke_text(
+        self,
+        prompt: str,
+        *,
+        user_id: str | None = None,
+        session_key: str | None = None,
+        fallback: str | None = None,
+    ) -> str:
+        return self.invoke_text(
+            prompt,
+            user_id=user_id,
+            session_key=session_key,
+            fallback=fallback or "",
+        )
+
+    async def ainvoke_text_streamed(
+        self,
+        prompt: str,
+        *,
+        user_id: str | None = None,
+        session_key: str | None = None,
+        fallback: str | None = None,
+        on_chunk: Any | None = None,
+    ) -> str:
+        result = self.invoke_text(
+            prompt,
+            user_id=user_id,
+            session_key=session_key,
+            fallback=fallback or "",
+        )
+        if on_chunk is not None:
+            on_chunk(result)
+        return result
 
 
 class _FakeMessage:
@@ -328,5 +363,129 @@ async def test_bot_commands_registered_on_start_when_sender_set() -> None:
 
     assert len(sender.set_commands_calls) == 1
     assert sender.set_commands_calls[0] == TELEGRAM_BOT_COMMANDS
+
+    await runtime.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# /help and /status commands
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_help_command_replies_with_command_list() -> None:
+    events: list[str] = []
+    application = _FakeApplication(events)
+    chat_runtime = _RecordingChatRuntime()
+
+    runtime = build_telegram_bot_runtime(
+        bot_token="token",
+        chat_runtime=chat_runtime,
+        authorized_user_ids={"42"},
+        application_factory=lambda _token: application,
+        handler_binder=lambda app, handler: app.add_handler(handler),
+    )
+
+    assert runtime is not None
+    await runtime.start()
+    handler = application.handlers[0]
+
+    update = _FakeUpdate(user_id=42, chat_id=9001, text="/help")
+    await handler(update, None)
+
+    assert chat_runtime.calls == []  # agent not invoked
+    assert update.effective_message.replies
+    reply = update.effective_message.replies[0]
+    assert "/msg" in reply
+    assert "/help" in reply
+    assert "/status" in reply
+
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_status_command_reports_agent_availability() -> None:
+    events: list[str] = []
+    application = _FakeApplication(events)
+    chat_runtime = _RecordingChatRuntime()
+    chat_runtime.is_available = True
+
+    runtime = build_telegram_bot_runtime(
+        bot_token="token",
+        chat_runtime=chat_runtime,
+        authorized_user_ids={"42"},
+        application_factory=lambda _token: application,
+        handler_binder=lambda app, handler: app.add_handler(handler),
+    )
+
+    assert runtime is not None
+    await runtime.start()
+    handler = application.handlers[0]
+
+    update = _FakeUpdate(user_id=42, chat_id=9001, text="/status")
+    await handler(update, None)
+
+    assert chat_runtime.calls == []
+    assert update.effective_message.replies
+    assert "ready" in update.effective_message.replies[0].lower()
+
+    await runtime.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# Streaming via send_message-capable sender
+# ---------------------------------------------------------------------------
+
+
+class _StreamCapableSender(_FakeSender):
+    """Extends _FakeSender with send_message to enable the streaming path."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.sent_messages: list[tuple[str, str]] = []  # (chat_id, text)
+        self.edited_messages: list[tuple[str, int, str]] = []  # (chat_id, msg_id, text)
+        self._next_msg_id = 1
+
+    def send_message(self, chat_id: str, text: str, parse_mode: str = "") -> dict:
+        self.sent_messages.append((chat_id, text))
+        msg_id = self._next_msg_id
+        self._next_msg_id += 1
+        return {"message_id": msg_id}
+
+    def edit_message_text(self, chat_id: str, message_id: int, text: str, parse_mode: str = "") -> None:
+        self.edited_messages.append((chat_id, message_id, text))
+
+
+@pytest.mark.asyncio
+async def test_streaming_sender_delivers_response_via_send_message() -> None:
+    """When the sender has send_message, the response goes through TelegramStreamSender."""
+    events: list[str] = []
+    application = _FakeApplication(events)
+    chat_runtime = _RecordingChatRuntime()
+    sender = _StreamCapableSender()
+
+    runtime = build_telegram_bot_runtime(
+        bot_token="token",
+        chat_runtime=chat_runtime,
+        authorized_user_ids={"42"},
+        application_factory=lambda _token: application,
+        handler_binder=lambda app, handler: app.add_handler(handler),
+    )
+
+    assert runtime is not None
+    runtime.set_sender(sender)
+    await runtime.start()
+
+    handler = application.handlers[0]
+    update = _FakeUpdate(user_id=42, chat_id=9001, text="hello")
+    await handler(update, None)
+
+    # Agent was invoked via streaming path (reply_text NOT used).
+    assert chat_runtime.calls
+    assert chat_runtime.calls[0]["prompt"] == "hello"
+    # reply_text was never called (streaming sender handled delivery).
+    assert update.effective_message.replies == []
+    # At least one message was sent via the streaming-capable sender.
+    assert sender.sent_messages or sender.edited_messages
 
     await runtime.shutdown()

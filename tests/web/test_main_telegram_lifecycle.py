@@ -9,7 +9,7 @@ class _FakeUpdater:
     def __init__(self, events: list[str]) -> None:
         self._events = events
 
-    async def start_polling(self) -> None:
+    async def start_polling(self, **_kw) -> None:
         self._events.append("polling:start")
 
     async def stop(self) -> None:

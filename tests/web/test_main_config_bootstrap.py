@@ -364,7 +364,7 @@ async def test_main_app_reload_rebuilds_telegram_runtime_when_lifespan_running(
             self._events = events
             self._name = name
 
-        async def start_polling(self) -> None:
+        async def start_polling(self, **_kw) -> None:
             self._events.append(f"{self._name}:polling:start")
 
         async def stop(self) -> None:
@@ -445,6 +445,9 @@ async def test_main_app_reload_rebuilds_telegram_runtime_when_lifespan_running(
 
         old_shutdown_index = events.index("app1:app:shutdown")
         new_start_index = events.index("app2:app:start")
+        # New runtime starts before old one is shut down: this preserves availability
+        # (old keeps serving if new fails to start). drop_pending_updates=True on
+        # start_polling prevents stale-message replay during the brief overlap.
         assert new_start_index < old_shutdown_index
 
         runtime = app.state.telegram_runtime
@@ -464,7 +467,7 @@ async def test_main_app_reload_keeps_old_telegram_runtime_when_candidate_start_f
             self._events = events
             self._name = name
 
-        async def start_polling(self) -> None:
+        async def start_polling(self, **_kw) -> None:
             self._events.append(f"{self._name}:polling:start")
 
         async def stop(self) -> None:
@@ -574,7 +577,7 @@ async def test_main_app_reload_restores_host_manager_state_when_candidate_start_
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class _FakeUpdater:
-        async def start_polling(self) -> None:
+        async def start_polling(self, **_kw) -> None:
             return None
 
         async def stop(self) -> None:

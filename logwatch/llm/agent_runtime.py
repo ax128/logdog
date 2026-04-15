@@ -29,6 +29,11 @@ class AgentRuntime:
         self._agent = agent
         self._default_fallback = default_fallback
 
+    @property
+    def is_available(self) -> bool:
+        """True when the underlying agent was successfully built."""
+        return self._agent is not None
+
     def invoke_text(
         self,
         prompt: str,
@@ -100,6 +105,86 @@ class AgentRuntime:
         if rendered.strip() == "":
             return resolved_fallback
         return rendered
+
+    async def ainvoke_text_streamed(
+        self,
+        prompt: str,
+        *,
+        user_id: str | None = None,
+        session_key: str | None = None,
+        fallback: str | None = None,
+        on_chunk: Callable[[str], None] | None = None,
+    ) -> str:
+        """Async invoke with optional token-level streaming via on_chunk.
+
+        on_chunk receives the *full accumulated text so far* on every new batch
+        of tokens so that a streaming message can be updated in place.
+
+        Falls back to ainvoke_text when:
+        - on_chunk is None, or
+        - the agent does not expose astream_events (LangGraph v2 streams), or
+        - astream_events completes without emitting any chat-model tokens.
+        """
+        if on_chunk is None or not callable(getattr(self._agent, "astream_events", None)):
+            return await self.ainvoke_text(
+                prompt, user_id=user_id, session_key=session_key, fallback=fallback
+            )
+
+        resolved_fallback = str(fallback or self._default_fallback)
+        if self._agent is None:
+            return resolved_fallback
+
+        config = _build_runtime_config(user_id=user_id, session_key=session_key)
+        runtime_user_id = str(user_id or "anonymous").strip() or "anonymous"
+        reset_token = _CURRENT_RUNTIME_USER_ID.set(runtime_user_id)
+        accumulated = ""
+
+        try:
+            async for event in self._agent.astream_events(
+                {"messages": [HumanMessage(content=prompt)]}, config, version="v2"
+            ):
+                if event.get("event") != "on_chat_model_stream":
+                    continue
+                chunk = (event.get("data") or {}).get("chunk")
+                if chunk is None:
+                    continue
+                text_part = _extract_stream_chunk_text(chunk)
+                if text_part:
+                    accumulated += text_part
+                    try:
+                        on_chunk(accumulated)
+                    except Exception:  # noqa: BLE001
+                        pass
+        except Exception:  # noqa: BLE001 - keep streaming fallback path stable
+            logger.warning("agent runtime stream failed", exc_info=True)
+        finally:
+            _CURRENT_RUNTIME_USER_ID.reset(reset_token)
+
+        if accumulated.strip():
+            return accumulated
+
+        # Streaming produced no tokens — fall back to a regular full invoke.
+        return await self.ainvoke_text(
+            prompt, user_id=user_id, session_key=session_key, fallback=fallback
+        )
+
+
+def _extract_stream_chunk_text(chunk: Any) -> str:
+    """Extract text content from a LangChain streaming message chunk."""
+    content = getattr(chunk, "content", "")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict):
+                text = str(block.get("text") or "")
+                if text:
+                    parts.append(text)
+        return "".join(parts)
+    return ""
 
 
 def build_thread_id(*, user_id: str, session_key: str) -> str:
@@ -306,35 +391,29 @@ def _wrap_registered_tool(tool: Any) -> Any:
         except RuntimeError:
             loop = None
         if loop is not None and loop.is_running():
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                return pool.submit(asyncio.run, _atool(**kwargs)).result()
+            # Submit to the existing running loop so async resources (e.g.
+            # asyncio.Lock objects bound to that loop) are accessible from
+            # within _atool without "Future attached to a different loop" errors.
+            future = asyncio.run_coroutine_threadsafe(_atool(**kwargs), loop)
+            return future.result()
         return asyncio.run(_atool(**kwargs))
 
     _tool.__name__ = name
     _tool.__doc__ = description
 
-    try:
-        from langchain_core.tools import tool as lc_tool
+    from langchain_core.tools import StructuredTool
 
-        wrapped = (
-            lc_tool(args_schema=args_schema)(_tool)
-            if args_schema is not None
-            else lc_tool(_tool)
-        )
-        wrapped.handle_tool_error = True
-        return wrapped
-    except ImportError:
-        from langchain_core.tools import StructuredTool
-
-        st_kwargs: dict[str, Any] = {
-            "func": _tool,
-            "coroutine": _atool,
-            "name": name,
-            "description": description,
-        }
-        if args_schema is not None:
-            st_kwargs["args_schema"] = args_schema
-        return StructuredTool.from_function(**st_kwargs)
+    st_kwargs: dict[str, Any] = {
+        "func": _tool,
+        "coroutine": _atool,
+        "name": name,
+        "description": description,
+    }
+    if args_schema is not None:
+        st_kwargs["args_schema"] = args_schema
+    wrapped = StructuredTool.from_function(**st_kwargs)
+    wrapped.handle_tool_error = True
+    return wrapped
 
 
 def _import_base_checkpointer_saver() -> type | None:

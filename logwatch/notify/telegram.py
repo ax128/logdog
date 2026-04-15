@@ -27,9 +27,9 @@ SendFunc = Callable[..., Awaitable[None] | None]
 logger = logging.getLogger(__name__)
 TELEGRAM_AUTO_TARGET = "__auto__"
 TELEGRAM_BOT_COMMANDS = [
-    {"command": "msg", "description": "Switch message mode (text|txt|md|doc)"},
-    {"command": "help", "description": "Show help"},
-    {"command": "status", "description": "Show system status"},
+    {"command": "msg", "description": "Switch message mode (txt|md|doc)"},
+    {"command": "help", "description": "Show available commands"},
+    {"command": "status", "description": "Show agent status"},
 ]
 _AUTO_TARGET_ATTR = "_logwatch_supports_auto_target"
 _STREAM_EDIT_MIN_INTERVAL_SEC = 0.35
@@ -490,7 +490,7 @@ class TelegramBotRuntime:
             await self._application.start()
             app_started = True
             if updater is not None and hasattr(updater, "start_polling"):
-                await updater.start_polling()
+                await updater.start_polling(drop_pending_updates=True)
                 polling_started = True
             self._started = True
             self._register_bot_commands()
@@ -543,19 +543,132 @@ class TelegramBotRuntime:
         if normalized_user_id not in self._authorized_user_ids:
             return False
 
-        if await self._handle_message_mode_command(text=text, reply_text=reply_text):
-            return True
+        normalized_text = str(text or "").strip()
 
+        # Route slash commands before touching the agent.
+        if normalized_text.startswith("/"):
+            return await self._dispatch_command(
+                text=normalized_text,
+                user_id=normalized_user_id,
+                chat_id=chat_id,
+                reply_text=reply_text,
+            )
+
+        # Typing indicator while the agent is thinking.
         if self._sender is not None:
             try:
                 self._sender.send_chat_action(chat_id)
-            except Exception:
+            except Exception:  # noqa: BLE001
                 logger.debug("send_chat_action failed", exc_info=True)
 
+        await self._invoke_and_reply(
+            text=normalized_text or text,
+            user_id=normalized_user_id,
+            chat_id=chat_id,
+            reply_text=reply_text,
+        )
+        return True
+
+    async def _dispatch_command(
+        self,
+        *,
+        text: str,
+        user_id: str,
+        chat_id: str,
+        reply_text: Callable[[str], Awaitable[None] | None],
+    ) -> bool:
+        """Route a slash command to the appropriate handler."""
+        cmd_raw = text.split(maxsplit=1)[0].lower()
+        # Strip optional @BotName suffix (e.g. /help@MyBot).
+        cmd = cmd_raw.split("@", 1)[0]
+
+        if cmd == "/msg":
+            return await self._handle_message_mode_command(text=text, reply_text=reply_text)
+
+        if cmd == "/help":
+            lines = ["Available commands:"]
+            for entry in TELEGRAM_BOT_COMMANDS:
+                lines.append(f"  /{entry['command']} — {entry['description']}")
+            lines.append("\nSend any message to chat with the agent.")
+            await _maybe_await_reply(reply_text, "\n".join(lines))
+            return True
+
+        if cmd == "/status":
+            available = bool(getattr(self._chat_runtime, "is_available", False))
+            status = "✅ Agent ready" if available else "⚠️ Agent unavailable"
+            await _maybe_await_reply(reply_text, status)
+            return True
+
+        # Unknown command — pass through to the agent as plain text.
+        if self._sender is not None:
+            try:
+                self._sender.send_chat_action(chat_id)
+            except Exception:  # noqa: BLE001
+                logger.debug("send_chat_action failed", exc_info=True)
+
+        await self._invoke_and_reply(
+            text=text,
+            user_id=user_id,
+            chat_id=chat_id,
+            reply_text=reply_text,
+        )
+        return True
+
+    async def _invoke_and_reply(
+        self,
+        *,
+        text: str,
+        user_id: str,
+        chat_id: str,
+        reply_text: Callable[[str], Awaitable[None] | None],
+    ) -> None:
+        """Invoke the agent and deliver the response.
+
+        Uses streaming + TelegramStreamSender when the sender supports it
+        (i.e. has send_message), which gives the user incremental feedback as
+        the model produces tokens.  Falls back to a single reply_text call when
+        the sender is absent or does not have send_message (e.g. in tests).
+        """
+        use_streaming = (
+            self._sender is not None
+            and hasattr(self._sender, "send_message")
+            and hasattr(self._chat_runtime, "ainvoke_text_streamed")
+        )
+
+        if use_streaming:
+            mode = self._resolve_current_message_mode()
+            fmt = "markdown" if mode in ("md", "doc") else "plain"
+            stream_sender = TelegramStreamSender(self._sender, chat_id)
+
+            try:
+                result = await self._chat_runtime.ainvoke_text_streamed(
+                    text,
+                    user_id=user_id,
+                    session_key=f"telegram:{chat_id}",
+                    fallback=DEFAULT_CHAT_FALLBACK_MESSAGE,
+                    on_chunk=stream_sender.update,
+                )
+            except Exception:  # noqa: BLE001
+                logger.warning("telegram streaming invoke failed", exc_info=True)
+                result = DEFAULT_CHAT_FALLBACK_MESSAGE
+
+            # Finalize first 4096-char chunk via stream sender; send overflow as
+            # separate messages so nothing is silently truncated.
+            chunks = split_message(result, max_chars=4096)
+            stream_sender.finalize(chunks[0], fmt=fmt)
+            parse_mode = "Markdown" if fmt == "markdown" else ""
+            for extra in chunks[1:]:
+                try:
+                    self._sender.send_message(chat_id, extra, parse_mode=parse_mode)
+                except Exception:  # noqa: BLE001
+                    logger.warning("telegram overflow chunk send failed", exc_info=True)
+            return
+
+        # Non-streaming path.
         try:
-            reply = self._chat_runtime.invoke_text(
+            reply = await self._chat_runtime.ainvoke_text(
                 text,
-                user_id=normalized_user_id,
+                user_id=user_id,
                 session_key=f"telegram:{chat_id}",
                 fallback=DEFAULT_CHAT_FALLBACK_MESSAGE,
             )
@@ -563,10 +676,9 @@ class TelegramBotRuntime:
             logger.warning("telegram chat runtime invoke failed", exc_info=True)
             reply = DEFAULT_CHAT_FALLBACK_MESSAGE
 
-        result = reply_text(reply)
-        if inspect.isawaitable(result):
-            await result
-        return True
+        result_r = reply_text(reply)
+        if inspect.isawaitable(result_r):
+            await result_r
 
     async def _handle_message_mode_command(
         self,
@@ -583,7 +695,7 @@ class TelegramBotRuntime:
             current_mode = self._resolve_current_message_mode()
             await _maybe_await_reply(
                 reply_text,
-                f"usage: /msg <text|txt|md|doc> (current: {current_mode})",
+                f"usage: /msg <txt|md|doc> (current: {current_mode})",
             )
             return True
 
@@ -600,7 +712,7 @@ class TelegramBotRuntime:
         except Exception:
             await _maybe_await_reply(
                 reply_text,
-                "unsupported mode, use one of: text|txt|md|doc",
+                "unsupported mode, use one of: txt|md|doc",
             )
             return True
 
@@ -661,12 +773,25 @@ def build_telegram_bot_runtime(
         chat = getattr(update, "effective_chat", None)
         if message is None or user is None or chat is None:
             return
+
         text = getattr(message, "text", None) or getattr(message, "caption", None) or ""
         if not isinstance(text, str):
-            return
+            text = ""
+
         document = getattr(message, "document", None)
-        if not text and document is None:
-            return
+        photo = getattr(message, "photo", None)
+
+        # When the user sends a file or photo without a caption, synthesise a
+        # minimal context hint so the agent receives something meaningful.
+        if not text:
+            if document is not None:
+                file_name = getattr(document, "file_name", None) or "file"
+                text = f"[File: {file_name}]"
+            elif photo is not None:
+                text = "[Image]"
+            else:
+                return  # nothing to handle
+
         await runtime.handle_text_message(
             user_id=str(getattr(user, "id", "")),
             chat_id=str(getattr(chat, "id", "")),

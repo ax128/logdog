@@ -107,7 +107,7 @@ hosts:
       channels: [local-tel]
 
   - name: prod
-    url: ssh://root@95.111.242.146:11680
-    ssh_key: /root/.ssh/id_ed25519
+    url: "ssh://${PROD_USER:-root}@${PROD_HOST}:${PROD_PORT:-22}"
+    ssh_key: "${PROD_SSH_KEY:-/root/.ssh/id_ed25519}"
     notify:
       channels: [prod-tel]

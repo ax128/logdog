@@ -554,6 +554,8 @@ def create_tool_registry(
     async def restart_container_handler(
         arguments: dict[str, Any], _writer: Any
     ) -> ToolResult:
+        if not bool(arguments.get("confirmed")):
+            raise ValueError("confirmed must be True to execute restart")
         host = _require_host_config(host_manager, arguments)
         container_id = _require_non_empty_str(
             arguments.get("container_id"), field_name="container_id"
