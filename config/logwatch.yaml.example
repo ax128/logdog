@@ -1,8 +1,21 @@
-# Copy this file to config/logwatch.yaml and adjust values for your environment.
-# Security hardening:
-# User preprocessors under config/preprocessors/*.py are disabled by default.
-# Set LOGWATCH_ENABLE_USER_PREPROCESSORS=1 to enable loading custom preprocessors.
+# =====================================================================
+# LogWatch 配置文件
+# 复制为 config/logwatch.yaml 后按需修改
+#
+# 核心概念:
+#   channels  - 定义消息通道（Telegram/WeCom/Weixin 等）
+#   routing   - 定义路由规则（按服务器/容器/告警类别分发到不同通道）
+#   hosts     - 定义被监控的服务器及其允许的通道白名单
+#
+# 消息路由流程:
+#   告警触发 → routing.rules 按 priority 从高到低匹配
+#     → 命中规则 → 发到规则指定的 channels
+#     → 未命中   → 发到 routing.default_channels
+#     → default 也为空 → 回退到该 host 白名单中的全部通道
+# =====================================================================
 
+
+# ── 指标采样 ──────────────────────────────────────────────
 metrics:
   sample_interval_seconds: 30
   host_system:
@@ -20,6 +33,8 @@ metrics:
         mem_used_percent: 90
         disk_used_percent: 90
 
+
+# ── 存储 ──────────────────────────────────────────────────
 storage:
   db_path: data/logwatch.db
   sqlite:
@@ -35,72 +50,183 @@ storage:
     host_metrics_days: 7
     storm_days: 14
 
+
+# ── Docker 连接池 ─────────────────────────────────────────
 docker:
   pool:
     max_clients: 8
     max_idle_seconds: 60
 
+
+# ── 调度器 ────────────────────────────────────────────────
 scheduler:
   max_instances: 1
   coalesce: true
   misfire_grace_time: 30
 
+
+# =====================================================================
+# 通知系统
+# =====================================================================
 notify:
-  # 兼容旧写法：telegram/wechat 单通道配置仍可用
-  telegram:
-    enabled: false
-    chat_ids: []
-    auto_chat_id: true # chat_ids 为空时，基于 TELEGRAM_BOT_TOKEN 自动匹配最近会话 chat_id
-    message_mode: text  # text|txt|md|doc
-  wechat:
-    enabled: false
-    webhook_urls: []
-    message_mode: text  # text|txt|md|doc
-  wecom:
-    enabled: false
-    targets: [] # 填完整 webhook URL；也可留空后走 WECOM_WEBHOOK_URL
-    message_mode: md  # text|txt|md|doc
 
-  # 新写法：命名多通道（推荐）
+  # ──────────────────────────────────────────────────────
+  # 通道定义
+  #
+  # 每个通道是一个独立的消息投递目标。
+  # 通道名自由命名，在 routing.rules 和 hosts[].notify.channels 中引用。
+  #
+  # 支持的类型: telegram / wechat / weixin / wecom
+  #
+  # Telegram 通道参数:
+  #   bot_tokens    - Bot Token 列表（支持环境变量 ${VAR}）
+  #   chat_ids      - 目标 Chat ID 列表（不填则用 auto_chat_id）
+  #   auto_chat_id  - true 时自动发现最近对话的 chat（适合单人调试）
+  #   message_mode  - text / txt / md / doc
+  #
+  # WeCom 通道参数:
+  #   targets       - Webhook URL 列表
+  #   message_mode  - text / md
+  #
+  # Weixin 通道参数:
+  #   targets       - 目标列表
+  #   message_mode  - text / md
+  # ──────────────────────────────────────────────────────
   channels:
-    tel1:
-      type: telegram
-      enabled: false
-      chat_ids: []
-      message_mode: text
-    tel2:
-      type: telegram
-      enabled: false
-      chat_ids: []
-    weixin-user:
-      type: weixin
-      enabled: false
-      targets: []
-    wecom-prod:
-      type: wecom
-      enabled: false
-      targets: [] # 填完整 webhook URL；也可用 WECOM_TARGET / WECOM_WEBHOOK_URL
 
+    # ── 示例: 本地开发用 Telegram ──
+    local-tel:
+      type: telegram
+      enabled: true
+      bot_tokens: ["${BOTTOKEN1}"]
+      chat_ids: ["${CHAT_LOCAL}"]
+      message_mode: md
+
+    # ── 示例: 生产 API 告警专用 Telegram 群 ──
+    # prod-api-tel:
+    #   type: telegram
+    #   enabled: true
+    #   bot_tokens: ["${BOTTOKEN1}"]
+    #   chat_ids: ["${CHAT_PROD_API}"]
+    #   message_mode: md
+
+    # ── 示例: 生产运维 Telegram 群 ──
+    # prod-ops-tel:
+    #   type: telegram
+    #   enabled: true
+    #   bot_tokens: ["${BOTTOKEN1}"]
+    #   chat_ids: ["${CHAT_PROD_OPS}"]
+    #   message_mode: md
+
+    # ── 示例: 测试环境 Telegram (用不同的 bot) ──
+    # staging-tel:
+    #   type: telegram
+    #   enabled: true
+    #   bot_tokens: ["${BOTTOKEN2}"]
+    #   chat_ids: ["${CHAT_STAGING}"]
+    #   message_mode: text
+
+    # ── 示例: 企业微信告警通道 ──
+    # prod-wecom:
+    #   type: wecom
+    #   enabled: true
+    #   targets: ["${WECOM_WEBHOOK_PROD}"]
+    #   message_mode: md
+
+    # ── 示例: 企业微信运维通道 ──
+    # ops-wecom:
+    #   type: wecom
+    #   enabled: true
+    #   targets: ["${WECOM_WEBHOOK_OPS}"]
+    #   message_mode: md
+
+
+  # ──────────────────────────────────────────────────────
+  # 路由规则
+  #
+  # 告警触发后按 priority 从高到低逐条匹配:
+  #   match.hosts       - 服务器名通配 (fnmatch)，如 ["prod-*"]
+  #   match.containers  - 容器名/ID通配，如 ["api", "gateway-*"]
+  #   match.categories  - 告警类别，如 ["ERROR", "OOM", "BUSINESS"]
+  #
+  # 三个条件取交集: 全部满足才算命中。
+  # 省略某条件 = 不限制该维度。
+  #
+  # 命中后发到 deliver.channels 指定的通道。
+  # 全部规则未命中 → 使用 default_channels。
+  # default_channels 也为空 → 回退到 host 白名单的全部通道。
+  #
+  # 建议:
+  #   - 精确规则用高 priority (100+)
+  #   - 每台服务器配一条兜底规则 (priority: 1)
+  # ──────────────────────────────────────────────────────
   routing:
-    default_channels: [tel1]
-    rules:
-      - name: api-critical
-        priority: 100
-        match:
-          hosts: [prod-*]
-          containers: [api, gateway-*]
-          categories: [ERROR, OOM]
-        deliver:
-          channels: [wecom-prod]
-          message_mode: md
+    default_channels: [local-tel]
 
+    rules: []
+
+    # ── 示例: 多服务器多容器精细路由 ──
+    #
+    # rules:
+    #   # 生产 API 容器的严重告警 → API 专属群
+    #   - name: prod-api-critical
+    #     priority: 100
+    #     match:
+    #       hosts: ["prod"]
+    #       containers: ["api", "api-*", "gateway"]
+    #       categories: ["ERROR", "OOM"]
+    #     deliver:
+    #       channels: ["prod-api-tel"]
+    #       message_mode: md
+    #
+    #   # 生产数据库容器 → 企业微信运维
+    #   - name: prod-db
+    #     priority: 100
+    #     match:
+    #       hosts: ["prod"]
+    #       containers: ["mysql", "redis", "postgres"]
+    #     deliver:
+    #       channels: ["ops-wecom"]
+    #
+    #   # 生产其他容器 → 运维 Telegram (兜底)
+    #   - name: prod-fallback
+    #     priority: 1
+    #     match:
+    #       hosts: ["prod"]
+    #     deliver:
+    #       channels: ["prod-ops-tel"]
+    #
+    #   # 测试环境全部 → 测试群
+    #   - name: staging-all
+    #     priority: 1
+    #     match:
+    #       hosts: ["staging"]
+    #     deliver:
+    #       channels: ["staging-tel"]
+    #
+    #   # OOM 全局加报企业微信 (不限服务器)
+    #   - name: global-oom
+    #     priority: 200
+    #     match:
+    #       categories: ["OOM"]
+    #     deliver:
+    #       channels: ["prod-wecom"]
+
+
+# ── LLM / Agent ──────────────────────────────────────────
 llm:
-  enabled: true  # true: 使用 deepagent/llm 作为中间层；false: 走脚本直推
+  enabled: true
+  # model: "openai:${LLM_MODEL}"
 
 agent:
   authorized_users:
-    telegram: []  # Telegram user id 列表；为空时 bot 将拒绝所有消息
+    telegram: []
+    # 填入你的 Telegram User ID，允许通过 Bot 交互
+    # 获取方式: 给 @userinfobot 发消息，拿到你的 id
+    # telegram: ["123456789"]
 
+
+# ── 默认值 (所有 host 继承) ───────────────────────────────
 defaults:
   schedules_mode: append
   schedules:
@@ -114,11 +240,48 @@ defaults:
     worker_count: 2
     drop_when_full: true
 
+
+# =====================================================================
+# 被监控的服务器
+#
+# notify.channels: 该服务器允许使用的通道白名单
+# 不配 notify.channels → 可用所有已定义通道
+# 配了 → 只允许列出的通道（routing rules 也受此约束）
+# =====================================================================
 hosts:
+  # ── 本地开发 ──
   - name: local
     url: unix:///var/run/docker.sock
-  - name: prod
-    url: ssh://deploy@example-host
-    ssh_key: /path/to/id_rsa
     notify:
-      channels: [tel2, wecom-prod]  # 当前主机仅允许这些命名通道
+      channels: [local-tel]
+
+  # ── 生产服务器 ──
+  # - name: prod
+  #   url: ssh://root@10.0.1.1:22
+  #   ssh_key: /root/.ssh/id_ed25519
+  #   notify:
+  #     channels: [prod-api-tel, prod-ops-tel, ops-wecom, prod-wecom]
+  #     # ↑ 允许 4 个通道，routing rules 按容器/类别分发
+
+  # ── 测试环境 ──
+  # - name: staging
+  #   url: ssh://deploy@10.0.2.1:22
+  #   ssh_key: /root/.ssh/id_ed25519
+  #   notify:
+  #     channels: [staging-tel]
+
+
+# =====================================================================
+# 快速上手（最简配置）
+#
+# 1. 复制本文件为 config/logwatch.yaml
+# 2. 复制 .env.example 为 .env
+# 3. 在 .env 中填入:
+#      BOTTOKEN1=你的BotToken
+#      CHAT_LOCAL=你的ChatID
+# 4. 启动: docker compose up -d
+#
+# 所有服务器的告警都会发到 local-tel 这个通道。
+#
+# 需要分流时，按上面注释的示例添加 channels + rules + hosts 即可。
+# =====================================================================
