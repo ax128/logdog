@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import inspect
 import importlib
+import json
 import logging
 import os
 import re
 import time
+from pathlib import Path
 from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
 from typing import Any, Callable
@@ -2496,6 +2498,35 @@ def _resolve_authorized_telegram_users(
     return {str(item).strip() for item in telegram_users if str(item).strip() != ""}
 
 
+_AUTHORIZED_USERS_STATE_FILE = "data/logdog_authorized.json"
+
+
+def _load_persisted_authorized_users() -> set[str]:
+    try:
+        path = Path(_AUTHORIZED_USERS_STATE_FILE)
+        if path.exists():
+            data = json.loads(path.read_text())
+            return {str(uid).strip() for uid in data.get("telegram", []) if str(uid).strip()}
+    except Exception:  # noqa: BLE001
+        logger.warning("failed to load persisted authorized users", exc_info=True)
+    return set()
+
+
+def _persist_authorized_user(user_id: str) -> None:
+    try:
+        path = Path(_AUTHORIZED_USERS_STATE_FILE)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        existing: list[str] = []
+        if path.exists():
+            existing = json.loads(path.read_text()).get("telegram", [])
+        if user_id not in existing:
+            existing.append(user_id)
+        path.write_text(json.dumps({"telegram": existing}, indent=2))
+        logger.info("persisted authorized Telegram user %s to %s", user_id, path)
+    except Exception:  # noqa: BLE001
+        logger.warning("failed to persist authorized user", exc_info=True)
+
+
 def _build_telegram_runtime_from_config(
     *,
     app_config: dict[str, Any] | None,
@@ -2506,10 +2537,13 @@ def _build_telegram_runtime_from_config(
     telegram_handler_binder: Any | None = None,
 ):
     authorized_telegram_users = _resolve_authorized_telegram_users(app_config)
+    # Merge with persisted state from previous runs
+    authorized_telegram_users |= _load_persisted_authorized_users()
     telegram_bot_token = _resolve_telegram_bot_token(app_config)
     if telegram_bot_token and not authorized_telegram_users:
-        logger.warning(
-            "Telegram Bot enabled but no authorized users configured — all messages will be rejected"
+        logger.info(
+            "Telegram Bot: no authorized users configured — "
+            "first user to send a message will be auto-authorized"
         )
     runtime = build_telegram_bot_runtime(
         bot_token=telegram_bot_token,
@@ -2521,6 +2555,7 @@ def _build_telegram_runtime_from_config(
         handler_binder=telegram_handler_binder,
     )
     if runtime is not None and telegram_bot_token:
+        runtime.set_authorized_user_persist_callback(_persist_authorized_user)
         try:
             sender = TelegramBotTokenSender(telegram_bot_token)
             runtime.set_sender(sender)

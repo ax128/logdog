@@ -472,6 +472,12 @@ class TelegramBotRuntime:
         self._message_mode_getter = message_mode_getter
         self._sender: Any | None = None
         self._started = False
+        self._auto_authorize = len(self._authorized_user_ids) == 0
+        self._on_new_authorized_user: Callable[[str], None] | None = None
+
+    def set_authorized_user_persist_callback(self, callback: Callable[[str], None]) -> None:
+        """Register a callback invoked when a new user is auto-authorized."""
+        self._on_new_authorized_user = callback
 
     def set_sender(self, sender: Any) -> None:
         """Attach a TelegramBotTokenSender for typing indicators and file operations."""
@@ -541,7 +547,17 @@ class TelegramBotRuntime:
     ) -> bool:
         normalized_user_id = str(user_id).strip()
         if normalized_user_id not in self._authorized_user_ids:
-            return False
+            if self._auto_authorize and normalized_user_id:
+                self._authorized_user_ids.add(normalized_user_id)
+                self._auto_authorize = False
+                logger.info("auto-authorized first Telegram user: %s", normalized_user_id)
+                if self._on_new_authorized_user is not None:
+                    try:
+                        self._on_new_authorized_user(normalized_user_id)
+                    except Exception:  # noqa: BLE001
+                        logger.warning("failed to persist authorized user id", exc_info=True)
+            else:
+                return False
 
         normalized_text = str(text or "").strip()
 
