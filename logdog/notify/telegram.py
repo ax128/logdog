@@ -91,11 +91,21 @@ class TelegramBotTokenSender:
         self._auto_chat_cache_ttl_seconds = float(auto_chat_cache_ttl_seconds)
         self._cached_chat_id: str | None = None
         self._cached_at_ts = 0.0
+        self._pinned_chat_id: str | None = None  # set externally from bot runtime
+
+    def pin_chat_id(self, chat_id: str) -> None:
+        """Inject a known chat_id discovered by the bot runtime (avoids getUpdates conflict)."""
+        if str(chat_id or "").strip():
+            self._pinned_chat_id = str(chat_id).strip()
 
     def send(self, target: str, message: str, parse_mode: str = "") -> None:
         chat_id = str(target or "").strip()
         if chat_id == "" or chat_id == TELEGRAM_AUTO_TARGET:
-            chat_id = self._resolve_auto_chat_id()
+            # Prefer chat_id pinned by bot runtime over getUpdates (polling conflict).
+            if self._pinned_chat_id:
+                chat_id = self._pinned_chat_id
+            else:
+                chat_id = self._resolve_auto_chat_id()
         self.send_message(chat_id, str(message), parse_mode=parse_mode)
 
     def send_message(
@@ -419,6 +429,7 @@ def build_telegram_bot_token_sender(
         sender.send(target, message, parse_mode=parse_mode)
 
     setattr(send_func, _AUTO_TARGET_ATTR, True)
+    setattr(send_func, "pin_chat_id", sender.pin_chat_id)
     return send_func
 
 
@@ -474,6 +485,12 @@ class TelegramBotRuntime:
         self._started = False
         self._auto_authorize = len(self._authorized_user_ids) == 0
         self._on_new_authorized_user: Callable[[str], None] | None = None
+        self._last_chat_id: str | None = None
+        self._on_chat_id_seen: Callable[[str], None] | None = None
+
+    def set_chat_id_seen_callback(self, callback: Callable[[str], None]) -> None:
+        """Register a callback invoked whenever a new chat_id is observed."""
+        self._on_chat_id_seen = callback
 
     def set_authorized_user_persist_callback(self, callback: Callable[[str], None]) -> None:
         """Register a callback invoked when a new user is auto-authorized."""
@@ -566,6 +583,17 @@ class TelegramBotRuntime:
                         )
             else:
                 return False
+
+        # Track the most recent chat_id so notify sender can use it without
+        # calling getUpdates (which conflicts with start_polling).
+        new_chat_id = str(chat_id)
+        if new_chat_id != self._last_chat_id:
+            self._last_chat_id = new_chat_id
+            if self._on_chat_id_seen is not None:
+                try:
+                    self._on_chat_id_seen(new_chat_id)
+                except Exception:  # noqa: BLE001
+                    logger.warning("on_chat_id_seen callback failed", exc_info=True)
 
         normalized_text = str(text or "").strip()
 

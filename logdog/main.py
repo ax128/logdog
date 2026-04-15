@@ -887,6 +887,7 @@ def create_app(
         telegram_application_factory=telegram_application_factory,
         telegram_handler_binder=telegram_handler_binder,
     )
+    _wire_telegram_chat_id_sync(app.state.telegram_runtime, resolved_notify_router)
     app.state.schedule_report_runner = schedule_report_runner
     app.state.storm_controller = storm_controller
     app.state.app_config = current_app_config
@@ -1017,6 +1018,9 @@ def create_app(
                 message_mode_getter=lambda: get_notify_message_mode("telegram"),
                 telegram_application_factory=telegram_application_factory,
                 telegram_handler_binder=telegram_handler_binder,
+            )
+            _wire_telegram_chat_id_sync(
+                candidate_telegram_runtime, resolved_notify_router
             )
 
             candidate_report_scheduler = build_report_scheduler_for_config(
@@ -2546,6 +2550,47 @@ def _persist_authorized_user(user_id: str) -> None:
         logger.info("persisted authorized Telegram user %s to %s", user_id, path)
     except Exception:  # noqa: BLE001
         logger.warning("failed to persist authorized user", exc_info=True)
+
+
+def _collect_pin_chat_id_funcs(notify_router: Any) -> list[Callable[[str], None]]:
+    """Collect all pin_chat_id callables from telegram send_funcs in the notify router."""
+    funcs: list[Callable[[str], None]] = []
+    seen: set[int] = set()
+
+    def _try_add(send_func: Any) -> None:
+        pin = getattr(send_func, "pin_chat_id", None)
+        if callable(pin) and id(pin) not in seen:
+            seen.add(id(pin))
+            funcs.append(pin)
+
+    if notify_router is None:
+        return funcs
+    for notifier in getattr(notify_router, "_notifiers", []):
+        _try_add(getattr(notifier, "_send_func", None))
+    for host_notifiers in getattr(notify_router, "_host_notifiers", {}).values():
+        for notifier in host_notifiers:
+            _try_add(getattr(notifier, "_send_func", None))
+    return funcs
+
+
+def _wire_telegram_chat_id_sync(runtime: Any, notify_router: Any) -> None:
+    """Register a callback on the bot runtime that pins the observed chat_id
+    to all telegram notify senders, bypassing getUpdates/polling conflict."""
+    if runtime is None:
+        return
+    pin_funcs = _collect_pin_chat_id_funcs(notify_router)
+    if not pin_funcs:
+        return
+
+    def _on_chat_id_seen(chat_id: str) -> None:
+        for fn in pin_funcs:
+            try:
+                fn(chat_id)
+            except Exception:  # noqa: BLE001
+                logger.warning("pin_chat_id failed for a notify sender", exc_info=True)
+
+    if callable(getattr(runtime, "set_chat_id_seen_callback", None)):
+        runtime.set_chat_id_seen_callback(_on_chat_id_seen)
 
 
 def _build_telegram_runtime_from_config(
