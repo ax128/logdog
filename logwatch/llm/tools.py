@@ -357,7 +357,6 @@ def create_tool_registry(
         arguments: dict[str, Any],
         handler: Callable[[dict[str, Any], Any], Any],
     ) -> Any:
-        writer = await resolve_writer()
         audit_payload = {
             "event": "llm_tool_call",
             "tool": tool_name,
@@ -365,6 +364,16 @@ def create_tool_registry(
             "read_only": read_only,
             "arguments": dict(arguments),
         }
+
+        try:
+            writer = await resolve_writer()
+        except Exception:
+            logger.warning(
+                "tool audit fallback (writer unavailable): %s",
+                audit_payload,
+                exc_info=True,
+            )
+            raise
 
         async def write_audit_safe(payload: dict[str, Any]) -> None:
             try:
@@ -403,21 +412,21 @@ def create_tool_registry(
 
     async def list_hosts_handler(
         arguments: dict[str, Any], _writer: Any
-    ) -> dict[str, Any]:
+    ) -> ToolResult:
         _ensure_no_unknown_required_arguments(arguments, allowed_keys=())
         return ToolResult.ok(json.dumps({"hosts": list(host_manager.list_host_statuses())}))
 
     async def list_containers_handler(
         arguments: dict[str, Any],
         _writer: Any,
-    ) -> dict[str, Any]:
+    ) -> ToolResult:
         host = _require_host_config(host_manager, arguments)
         containers = await list_containers_op(host)
         return ToolResult.ok(json.dumps({"host": host["name"], "containers": containers}))
 
     async def query_logs_handler(
         arguments: dict[str, Any], _writer: Any
-    ) -> dict[str, Any]:
+    ) -> ToolResult:
         host = _require_host_config(host_manager, arguments)
         container_id = _require_non_empty_str(
             arguments.get("container_id"), field_name="container_id"
@@ -452,7 +461,7 @@ def create_tool_registry(
 
     async def get_metrics_handler(
         arguments: dict[str, Any], writer: Any
-    ) -> dict[str, Any]:
+    ) -> ToolResult:
         host = _require_host_config(host_manager, arguments)
         container_id = _require_non_empty_str(
             arguments.get("container_id"), field_name="container_id"
@@ -484,7 +493,7 @@ def create_tool_registry(
 
     async def get_alerts_handler(
         arguments: dict[str, Any], writer: Any
-    ) -> dict[str, Any]:
+    ) -> ToolResult:
         limit = _coerce_bounded_int(
             arguments.get("limit"),
             default=100,
@@ -495,7 +504,7 @@ def create_tool_registry(
 
     async def mute_alert_handler(
         arguments: dict[str, Any], writer: Any
-    ) -> dict[str, Any]:
+    ) -> ToolResult:
         host = _require_host_config(host_manager, arguments)
         container_id = _require_non_empty_str(
             arguments.get("container_id"), field_name="container_id"
@@ -523,7 +532,7 @@ def create_tool_registry(
 
     async def unmute_alert_handler(
         arguments: dict[str, Any], writer: Any
-    ) -> dict[str, Any]:
+    ) -> ToolResult:
         host = _require_host_config(host_manager, arguments)
         container_id = _require_non_empty_str(
             arguments.get("container_id"), field_name="container_id"
@@ -544,7 +553,7 @@ def create_tool_registry(
 
     async def restart_container_handler(
         arguments: dict[str, Any], _writer: Any
-    ) -> dict[str, Any]:
+    ) -> ToolResult:
         host = _require_host_config(host_manager, arguments)
         container_id = _require_non_empty_str(
             arguments.get("container_id"), field_name="container_id"
