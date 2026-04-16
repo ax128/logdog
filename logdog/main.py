@@ -49,7 +49,7 @@ from logdog.core.docker_connector import (
 from logdog.core.host_manager import HostManager
 from logdog.core.metrics_writer import MetricsSqliteWriter
 from logdog.llm.agent_runtime import build_chat_runtime
-from logdog.llm.provider import resolve_llm_params
+from logdog.llm.provider import resolve_for_role, resolve_llm_params
 from logdog.llm.tools import create_tool_registry
 from logdog.core.retention_scheduler import RetentionCleanupScheduler
 from logdog.notify.base import BaseNotifier, normalize_message_mode
@@ -127,6 +127,7 @@ def create_app(
     watch_manager: Any | None = None,
     enable_watch_manager: bool = True,
 ) -> FastAPI:
+    _configure_logging()
     resolved_web_auth_token = _resolve_web_auth_token(
         explicit_token=web_auth_token,
         allow_insecure_default_tokens=allow_insecure_default_tokens,
@@ -417,6 +418,8 @@ def create_app(
         host_system_settings_getter=lambda: current_host_system_settings,
         send_host_notification=getattr(resolved_notify_router, "send", None),
         send_global_notification=send_global_schedule_notification,
+        default_analysis_mode=_resolve_app_default_analysis_mode(resolved_app_config),
+        llm_config=(resolved_app_config or {}).get("llm") if isinstance((resolved_app_config or {}).get("llm"), dict) else None,
     )
     storm_controller = _build_alert_storm_controller(
         app_config=resolved_app_config,
@@ -877,13 +880,13 @@ def create_app(
         docker_client_pool=resolved_docker_client_pool,
     )
     _llm_cfg = (current_app_config or {}).get("llm") or {}
-    _llm_model = _llm_cfg.get("default_model") or _llm_cfg.get("model") or None
-    _llm_params = resolve_llm_params(_llm_model, _llm_cfg if isinstance(_llm_cfg, dict) else None)
+    _chat_params = resolve_for_role("chat", _llm_cfg if isinstance(_llm_cfg, dict) else None)
     app.state.chat_runtime = build_chat_runtime(
         tool_registry=app.state.tool_registry,
-        model=_llm_params.model or None,
-        api_base=_llm_params.api_base or None,
-        api_key=_llm_params.api_key or None,
+        model=_chat_params.model or None,
+        api_base=_chat_params.api_base or None,
+        api_key=_chat_params.api_key or None,
+        provider_type=_chat_params.provider_type or None,
     )
     app.state.telegram_runtime = _build_telegram_runtime_from_config(
         app_config=current_app_config,
@@ -1011,13 +1014,13 @@ def create_app(
                 docker_client_pool=resolved_docker_client_pool,
             )
             _new_llm_cfg = new_app_config.get("llm") or {}
-            _new_llm_model = _new_llm_cfg.get("default_model") or _new_llm_cfg.get("model") or None
-            _new_llm_params = resolve_llm_params(_new_llm_model, _new_llm_cfg if isinstance(_new_llm_cfg, dict) else None)
+            _new_chat_params = resolve_for_role("chat", _new_llm_cfg if isinstance(_new_llm_cfg, dict) else None)
             candidate_chat_runtime = build_chat_runtime(
                 tool_registry=candidate_tool_registry,
-                model=_new_llm_params.model or None,
-                api_base=_new_llm_params.api_base or None,
-                api_key=_new_llm_params.api_key or None,
+                model=_new_chat_params.model or None,
+                api_base=_new_chat_params.api_base or None,
+                api_key=_new_chat_params.api_key or None,
+                provider_type=_new_chat_params.provider_type or None,
             )
             candidate_telegram_runtime = _build_telegram_runtime_from_config(
                 app_config=new_app_config,
@@ -1291,6 +1294,43 @@ def _resolve_host_preprocessor_configs(host: dict[str, Any]) -> list[dict[str, A
     if not isinstance(raw, list):
         return []
     return [item for item in raw if isinstance(item, dict)]
+
+
+_logging_configured = False
+
+
+def _configure_logging() -> None:
+    global _logging_configured  # noqa: PLW0603
+    if _logging_configured:
+        return
+    _logging_configured = True
+    root = logging.getLogger()
+    if not root.handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(
+            logging.Formatter("%(levelname)s:%(name)s:%(message)s")
+        )
+        root.addHandler(handler)
+    root.setLevel(os.environ.get("LOG_LEVEL", "WARNING").upper())
+    # Ensure logdog loggers emit at INFO so we can see scheduler/notify activity.
+    logging.getLogger("logdog").setLevel(
+        os.environ.get("LOGDOG_LOG_LEVEL", "INFO").upper()
+    )
+
+
+def _resolve_app_default_analysis_mode(app_config: dict[str, Any] | None) -> str | None:
+    """Derive the default schedule analysis mode from the top-level llm config."""
+    if not isinstance(app_config, dict):
+        return None
+    llm_cfg = app_config.get("llm")
+    if not isinstance(llm_cfg, dict):
+        return None
+    enabled = llm_cfg.get("enabled")
+    if enabled is True:
+        return "llm"
+    if enabled is False:
+        return "script"
+    return None
 
 
 def _resolve_app_config(
@@ -2296,6 +2336,20 @@ def _merge_send_funcs(send_funcs: list[Any]) -> Any:
         if first_exc is not None:
             raise first_exc
 
+    # Forward pin_chat_id from underlying senders so _collect_pin_chat_id_funcs
+    # can discover them through the wrapper (needed for auto_chat_id pinning).
+    pin_funcs = [
+        getattr(f, "pin_chat_id", None)
+        for f in send_funcs
+        if callable(getattr(f, "pin_chat_id", None))
+    ]
+    if pin_funcs:
+        def _pin_all(chat_id: str) -> None:
+            for fn in pin_funcs:
+                fn(chat_id)
+
+        setattr(wrapped, "pin_chat_id", _pin_all)
+
     return wrapped
 
 
@@ -2422,6 +2476,12 @@ def _build_multi_target_send_func(send_func: Any, targets: list[str]):
             raise RuntimeError("notify send failed")
 
         retry_targets_by_key.pop(key, None)
+
+    # Forward pin_chat_id so _collect_pin_chat_id_funcs can discover it
+    # through the multi-target wrapper (needed for auto_chat_id pinning).
+    pin = getattr(send_func, "pin_chat_id", None)
+    if callable(pin):
+        setattr(wrapped, "pin_chat_id", pin)
 
     return wrapped
 
