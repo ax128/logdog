@@ -333,3 +333,56 @@ async def test_tool_registry_returns_success_when_audit_write_fails_after_handle
     result_data = json.loads(result.content)
     assert result_data["ok"] is True
     assert restart_calls == [{"host": "prod-a", "container_id": "c1", "timeout": 5}]
+
+
+@pytest.mark.asyncio
+async def test_query_logs_applies_host_preprocessors() -> None:
+    """query_logs should run per-host preprocessors (e.g. level_filter) on results."""
+
+    class _HostMgr:
+        def list_host_statuses(self) -> list[dict[str, Any]]:
+            return [{"name": "prod-a", "status": "connected"}]
+
+        def get_host_config(self, name: str) -> dict[str, Any] | None:
+            if name != "prod-a":
+                return None
+            return {
+                "name": "prod-a",
+                "url": "unix:///var/run/docker.sock",
+                "preprocessors": [
+                    {"name": "level_filter", "min_level": "warn"},
+                ],
+            }
+
+    raw_lines = [
+        {"timestamp": "2026-04-11 00:00:01", "line": "DEBUG starting up"},
+        {"timestamp": "2026-04-11 00:00:02", "line": "INFO ready"},
+        {"timestamp": "2026-04-11 00:00:03", "line": "WARN slow query"},
+        {"timestamp": "2026-04-11 00:00:04", "line": "ERROR crash"},
+    ]
+
+    async def query_logs_fn(
+        host: Any, container: Any, *, since: str, until: str | None, max_lines: int
+    ) -> list[dict[str, Any]]:
+        return list(raw_lines)
+
+    registry = create_tool_registry(
+        host_manager=_HostMgr(),
+        metrics_writer_factory=lambda: _MetricsWriterStub(),
+        list_containers_fn=lambda _h: [
+            {"id": "c1", "name": "api", "status": "running", "restart_count": 0}
+        ],
+        query_logs_fn=query_logs_fn,
+    )
+
+    result = await registry["query_logs"].invoke(
+        user_id="alice",
+        arguments={"host": "prod-a", "container_id": "c1", "hours": 1},
+    )
+    data = json.loads(result.content)
+    returned_lines = data["lines"]
+
+    # level_filter with min_level=warn should drop DEBUG and INFO
+    assert len(returned_lines) == 2
+    assert "WARN slow query" in returned_lines[0]["line"]
+    assert "ERROR crash" in returned_lines[1]["line"]

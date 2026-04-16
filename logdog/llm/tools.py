@@ -10,6 +10,8 @@ from collections.abc import Callable
 from typing import Any
 
 from logdog.llm.tool_types import ToolResult
+from logdog.pipeline.preprocessor.base import LogLine
+from logdog.pipeline.preprocessor.loader import load_builtin_preprocessors
 
 from logdog.core.db import query_metrics
 from logdog.core.docker_connector import (
@@ -519,6 +521,11 @@ def create_tool_registry(
             until=end_time,
             max_lines=max_lines,
         )
+        lines = _apply_host_preprocessors(
+            lines,
+            host=host,
+            container=container,
+        )
         return ToolResult.ok(json.dumps({
             "host": host["name"],
             "container_id": container["id"],
@@ -961,6 +968,48 @@ def _format_utc_timestamp(value: float) -> str:
     return datetime.fromtimestamp(float(value), tz=timezone.utc).strftime(
         "%Y-%m-%d %H:%M:%S"
     )
+
+
+def _apply_host_preprocessors(
+    lines: list[dict[str, Any]],
+    *,
+    host: dict[str, Any],
+    container: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Run per-host preprocessors over query_logs results.
+
+    Reuses the same preprocessor chain that the alert pipeline applies,
+    so the agent receives filtered/deduplicated/structured log lines
+    instead of raw output.
+    """
+    raw_configs = host.get("preprocessors")
+    if not isinstance(raw_configs, list) or not raw_configs:
+        return lines
+    configs = [item for item in raw_configs if isinstance(item, dict)]
+    if not configs:
+        return lines
+    preprocessors = load_builtin_preprocessors(configs)
+    if not preprocessors:
+        return lines
+    host_name = str(host.get("name") or "")
+    container_id = str(container.get("id") or "")
+    container_name = str(container.get("name") or container_id)
+    log_lines = [
+        LogLine(
+            host_name=host_name,
+            container_id=container_id,
+            container_name=container_name,
+            timestamp=str(entry.get("timestamp") or ""),
+            content=str(entry.get("line") or ""),
+        )
+        for entry in lines
+    ]
+    for preprocessor in preprocessors:
+        log_lines = list(preprocessor.process(log_lines))
+    return [
+        {"timestamp": ll.timestamp, "line": ll.content}
+        for ll in log_lines
+    ]
 
 
 async def _maybe_await(value: Any) -> Any:
