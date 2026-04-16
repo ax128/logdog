@@ -725,24 +725,29 @@ def _connect_operation():
 
 def _list_containers_operation():
     def operation(client: Any) -> list[dict[str, Any]]:
-        containers = client.containers.list(all=True)
+        # Use the low-level API (GET /containers/json) which returns dicts
+        # directly.  The high-level client.containers.list() calls inspect()
+        # for every container; short-lived containers that vanish between the
+        # list and the inspect raise NotFound (a Docker SDK race condition).
+        raw_list: list[dict[str, Any]] = client.api.containers(all=True)
         result: list[dict[str, Any]] = []
-        for container in containers:
-            container_id = str(getattr(container, "id", "") or "").strip()
+        for raw in raw_list:
+            container_id = str(raw.get("Id") or "").strip()
             if container_id == "":
                 continue
-            attrs = getattr(container, "attrs", {}) or {}
-            restart_count = _extract_restart_count(attrs)
-            status = str(
-                getattr(container, "status", "")
-                or _extract_state_status(attrs)
-                or "unknown"
+            # Names from the list API are prefixed with "/"
+            names = raw.get("Names") or []
+            container_name = (
+                names[0].lstrip("/") if names else container_id
             )
-            container_name = str(
-                getattr(container, "name", "")
-                or _extract_container_name(attrs)
-                or container_id
-            )
+            status = str(raw.get("State") or raw.get("Status") or "unknown")
+            # Fetch restart_count via inspect; skip container if it vanished.
+            restart_count = 0
+            try:
+                detail = client.api.inspect_container(container_id)
+                restart_count = _extract_restart_count(detail)
+            except Exception:
+                pass
             result.append(
                 {
                     "id": container_id,

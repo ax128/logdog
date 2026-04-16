@@ -18,6 +18,31 @@ class _FakeContainerObj:
         return self._stats_payload
 
 
+class _FakeLowLevelApi:
+    """Mimics ``client.api`` with low-level container methods."""
+
+    def __init__(self, containers: list[_FakeContainerObj]):
+        self._containers = containers
+
+    def containers(self, *, all: bool = True):
+        assert all is True
+        return [
+            {
+                "Id": c.id,
+                "Names": [f"/{c.name}"],
+                "State": c.status,
+                "Status": c.status,
+            }
+            for c in self._containers
+        ]
+
+    def inspect_container(self, container_id: str):
+        for c in self._containers:
+            if c.id == container_id:
+                return c.attrs
+        raise KeyError(container_id)
+
+
 class _FakeContainersApi:
     def __init__(self, containers: list[_FakeContainerObj]):
         self._containers = containers
@@ -37,17 +62,17 @@ class _FakeDockerClient:
     def __init__(self, *, base_url: str, use_ssh_client: bool = False, timeout: int | None = None):
         self.base_url = base_url
         self.use_ssh_client = use_ssh_client
-        self.containers = _FakeContainersApi(
-            [
-                _FakeContainerObj(
-                    "c1",
-                    "svc-1",
-                    "running",
-                    {"RestartCount": 3},
-                    {"cpu_stats": {"cpu_usage": {"total_usage": 1}}},
-                )
-            ]
-        )
+        _objs = [
+            _FakeContainerObj(
+                "c1",
+                "svc-1",
+                "running",
+                {"RestartCount": 3},
+                {"cpu_stats": {"cpu_usage": {"total_usage": 1}}},
+            )
+        ]
+        self.containers = _FakeContainersApi(_objs)
+        self.api = _FakeLowLevelApi(_objs)
         self.closed = False
 
     def version(self):
