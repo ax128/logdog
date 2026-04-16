@@ -386,3 +386,43 @@ async def test_query_logs_applies_host_preprocessors() -> None:
     assert len(returned_lines) == 2
     assert "WARN slow query" in returned_lines[0]["line"]
     assert "ERROR crash" in returned_lines[1]["line"]
+
+
+@pytest.mark.asyncio
+async def test_resolve_container_fuzzy_matches_substring() -> None:
+    """Agent passing 'api' should match container named 'myproject-api-server-1'."""
+    containers = [
+        {"id": "c1", "name": "myproject-api-server-1", "status": "running", "restart_count": 0},
+        {"id": "c2", "name": "redis", "status": "running", "restart_count": 0},
+    ]
+    registry = create_tool_registry(
+        host_manager=_HostManagerStub(),
+        metrics_writer_factory=lambda: _MetricsWriterStub(),
+        list_containers_fn=lambda _h: containers,
+        query_logs_fn=lambda *a, **kw: [{"timestamp": "t", "line": "ok"}],
+    )
+    result = await registry["query_logs"].invoke(
+        user_id="alice",
+        arguments={"host": "prod-a", "container_id": "api-server", "hours": 1},
+    )
+    data = json.loads(result.content)
+    assert data["container_id"] == "c1"
+
+
+@pytest.mark.asyncio
+async def test_resolve_container_error_lists_available() -> None:
+    """Error message should list available containers to help agent self-correct."""
+    containers = [
+        {"id": "c1", "name": "nginx", "status": "running", "restart_count": 0},
+        {"id": "c2", "name": "redis", "status": "running", "restart_count": 0},
+    ]
+    registry = create_tool_registry(
+        host_manager=_HostManagerStub(),
+        metrics_writer_factory=lambda: _MetricsWriterStub(),
+        list_containers_fn=lambda _h: containers,
+    )
+    with pytest.raises(ValueError, match="available containers"):
+        await registry["query_logs"].invoke(
+            user_id="alice",
+            arguments={"host": "prod-a", "container_id": "api-server", "hours": 1},
+        )

@@ -939,17 +939,44 @@ async def _resolve_container(
     list_containers_op: Callable[[dict[str, Any]], Any],
 ) -> dict[str, Any]:
     containers = await _maybe_await(list_containers_op(host))
+
+    # 1. Exact match on id or name
     for container in containers:
-        if _container_matches(container, container_id):
+        if _container_matches_exact(container, container_id):
             return dict(container)
-    raise ValueError(f"unknown container: {container_id}")
+
+    # 2. Fuzzy: substring / prefix match on name or id prefix
+    fuzzy_matches = [
+        c for c in containers if _container_matches_fuzzy(c, container_id)
+    ]
+    if len(fuzzy_matches) == 1:
+        return dict(fuzzy_matches[0])
+
+    available = [str(c.get("name") or c.get("id") or "?") for c in containers]
+    if len(fuzzy_matches) > 1:
+        matched_names = [str(c.get("name") or c.get("id")) for c in fuzzy_matches]
+        raise ValueError(
+            f"ambiguous container: '{container_id}' matches {matched_names}; "
+            f"available containers: {available}"
+        )
+    raise ValueError(
+        f"unknown container: '{container_id}'; "
+        f"available containers: {available}"
+    )
 
 
-def _container_matches(container: dict[str, Any], container_id: str) -> bool:
+def _container_matches_exact(container: dict[str, Any], container_id: str) -> bool:
     return (
         str(container.get("id") or "") == container_id
         or str(container.get("name") or "") == container_id
     )
+
+
+def _container_matches_fuzzy(container: dict[str, Any], query: str) -> bool:
+    name = str(container.get("name") or "").lower()
+    cid = str(container.get("id") or "").lower()
+    q = query.lower()
+    return q in name or cid.startswith(q)
 
 
 def _ensure_no_unknown_required_arguments(
