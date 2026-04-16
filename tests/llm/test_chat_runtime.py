@@ -8,6 +8,7 @@ from unittest.mock import MagicMock
 from logdog.llm.agent_runtime import (
     DEFAULT_CHAT_FALLBACK_MESSAGE,
     _BoundedCheckpointer,
+    build_analyzer_runtime,
     build_chat_runtime,
     build_thread_id,
 )
@@ -235,3 +236,101 @@ def test_bounded_checkpointer_put_writes_tracks_session() -> None:
     bc.put_writes(_make_config("chat:xyz"), [], "checkpoint-1")
 
     assert "chat:xyz" in bc._access_times
+
+
+# ---------------------------------------------------------------------------
+# _create_chat_model / provider_type tests
+# ---------------------------------------------------------------------------
+
+
+def test_chat_runtime_passes_model_instance_to_factory() -> None:
+    """When model + api_base + api_key are provided, factory receives a BaseChatModel instance."""
+    from langchain_core.language_models import BaseChatModel
+
+    captured: dict[str, Any] = {}
+
+    def factory(**kwargs: Any) -> _RecordingAgent:
+        captured.update(kwargs)
+        return _RecordingAgent()
+
+    runtime = build_chat_runtime(
+        tool_registry={},
+        model="gpt-5.4",
+        api_base="https://example.com/v1",
+        api_key="test-key",
+        provider_type="openai",
+        runtime_factory=factory,
+    )
+
+    assert isinstance(captured.get("model"), BaseChatModel)
+    assert "api_base" not in captured
+    assert "api_key" not in captured
+
+
+def test_chat_runtime_passes_string_model_when_no_api_base() -> None:
+    """When only model string is provided (no api_base), pass string directly."""
+    captured: dict[str, Any] = {}
+
+    def factory(**kwargs: Any) -> _RecordingAgent:
+        captured.update(kwargs)
+        return _RecordingAgent()
+
+    runtime = build_chat_runtime(
+        tool_registry={},
+        model="claude-sonnet-4-5-20250929",
+        runtime_factory=factory,
+    )
+
+    assert captured.get("model") == "claude-sonnet-4-5-20250929"
+
+
+def test_chat_runtime_falls_back_to_string_when_create_chat_model_fails(
+    monkeypatch: Any,
+) -> None:
+    """When _create_chat_model returns None, fall back to string model + api_base/api_key."""
+    from logdog.llm import agent_runtime as _mod
+
+    monkeypatch.setattr(_mod, "_create_chat_model", lambda *a, **kw: None)
+
+    captured: dict[str, Any] = {}
+
+    def factory(**kwargs: Any) -> _RecordingAgent:
+        captured.update(kwargs)
+        return _RecordingAgent()
+
+    build_chat_runtime(
+        tool_registry={},
+        model="gpt-5.4",
+        api_base="https://example.com/v1",
+        api_key="test-key",
+        provider_type="openai",
+        runtime_factory=factory,
+    )
+
+    assert captured.get("model") == "gpt-5.4"
+    assert captured.get("api_base") == "https://example.com/v1"
+    assert captured.get("api_key") == "test-key"
+
+
+def test_analyzer_runtime_passes_model_instance_to_factory() -> None:
+    """build_analyzer_runtime also pre-builds model when api_base/api_key are set."""
+    from langchain_core.language_models import BaseChatModel
+
+    captured: dict[str, Any] = {}
+
+    def factory(**kwargs: Any) -> _RecordingAgent:
+        captured.update(kwargs)
+        return _RecordingAgent()
+
+    build_analyzer_runtime(
+        tool_registry={},
+        model="gpt-5.4",
+        api_base="https://example.com/v1",
+        api_key="test-key",
+        provider_type="openai",
+        runtime_factory=factory,
+    )
+
+    assert isinstance(captured.get("model"), BaseChatModel)
+    assert "api_base" not in captured
+    assert "api_key" not in captured

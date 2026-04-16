@@ -193,12 +193,45 @@ def build_thread_id(*, user_id: str, session_key: str) -> str:
     return f"chat:{digest}"
 
 
+def _create_chat_model(
+    model: str,
+    api_base: str | None,
+    api_key: str | None,
+    provider_type: str | None,
+) -> Any | None:
+    """Try to build a BaseChatModel via ``init_chat_model``.
+
+    Returns the model instance on success, or *None* on any failure so the
+    caller can fall back to passing raw strings.
+    """
+    try:
+        from langchain.chat_models import init_chat_model  # type: ignore[import-untyped]
+    except ImportError:
+        logger.warning("langchain.chat_models.init_chat_model not available; skipping model pre-build")
+        return None
+
+    kwargs: dict[str, Any] = {}
+    if provider_type:
+        kwargs["model_provider"] = provider_type
+    if api_key:
+        kwargs["api_key"] = api_key
+    if api_base:
+        kwargs["base_url"] = api_base
+
+    try:
+        return init_chat_model(model, **kwargs)
+    except Exception:  # noqa: BLE001
+        logger.warning("_create_chat_model failed for model=%s", model, exc_info=True)
+        return None
+
+
 def build_chat_runtime(
     *,
     tool_registry: Mapping[str, Any] | None,
     model: str | None = None,
     api_base: str | None = None,
     api_key: str | None = None,
+    provider_type: str | None = None,
     runtime_factory: Callable[..., Any] | None = None,
     checkpointer_factory: Callable[[], Any] | None = None,
 ) -> AgentRuntime:
@@ -217,11 +250,18 @@ def build_chat_runtime(
         "checkpointer": checkpointer,
     }
     if model:
-        factory_kwargs["model"] = model
-    if api_base:
-        factory_kwargs["api_base"] = api_base
-    if api_key:
-        factory_kwargs["api_key"] = api_key
+        if api_base or api_key:
+            chat_model = _create_chat_model(model, api_base, api_key, provider_type)
+            if chat_model is not None:
+                factory_kwargs["model"] = chat_model
+            else:
+                factory_kwargs["model"] = model
+                if api_base:
+                    factory_kwargs["api_base"] = api_base
+                if api_key:
+                    factory_kwargs["api_key"] = api_key
+        else:
+            factory_kwargs["model"] = model
 
     try:
         agent = factory(**factory_kwargs)
@@ -238,6 +278,7 @@ def build_analyzer_runtime(
     model: str | None = None,
     api_base: str | None = None,
     api_key: str | None = None,
+    provider_type: str | None = None,
     runtime_factory: Callable[..., Any] | None = None,
 ) -> AgentRuntime | None:
     factory = runtime_factory or _load_deep_agent_factory()
@@ -248,11 +289,18 @@ def build_analyzer_runtime(
         "tools": _normalize_runtime_tools(list((tool_registry or {}).values())),
     }
     if model:
-        factory_kwargs["model"] = model
-    if api_base:
-        factory_kwargs["api_base"] = api_base
-    if api_key:
-        factory_kwargs["api_key"] = api_key
+        if api_base or api_key:
+            chat_model = _create_chat_model(model, api_base, api_key, provider_type)
+            if chat_model is not None:
+                factory_kwargs["model"] = chat_model
+            else:
+                factory_kwargs["model"] = model
+                if api_base:
+                    factory_kwargs["api_base"] = api_base
+                if api_key:
+                    factory_kwargs["api_key"] = api_key
+        else:
+            factory_kwargs["model"] = model
 
     try:
         agent = factory(**factory_kwargs)
