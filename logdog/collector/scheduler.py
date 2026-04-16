@@ -6,6 +6,7 @@ import logging
 from typing import Any
 
 _CYCLE_TIMEOUT_SECONDS = 60
+_REFRESH_TIMEOUT_SECONDS = 20
 
 
 def _default_scheduler_factory():
@@ -80,7 +81,16 @@ class MetricsSamplingScheduler:
         refresh_connectivity = getattr(self._host_manager, "startup_check", None)
         if callable(refresh_connectivity):
             try:
-                await _maybe_await(refresh_connectivity())
+                await asyncio.wait_for(
+                    _maybe_await(refresh_connectivity()),
+                    timeout=_REFRESH_TIMEOUT_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                self._logger.warning(
+                    "host connectivity refresh timed out after %ds, "
+                    "proceeding with stale host statuses",
+                    _REFRESH_TIMEOUT_SECONDS,
+                )
             except Exception:  # noqa: BLE001
                 self._logger.exception("host connectivity refresh failed")
         statuses = self._host_manager.list_host_statuses()

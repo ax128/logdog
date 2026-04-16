@@ -4,7 +4,7 @@
 metrics:
   sample_interval_seconds: 30
   host_system:
-    enabled: false
+    enabled: true
     sample_interval_seconds: 30
     collect_load: true
     collect_network: true
@@ -81,7 +81,18 @@ notify:
 
 llm:
   enabled: true
-  model: "openai:${LLM_MODEL}"
+  providers:
+    agentop:
+      provider_type: openai
+      api_base: "https://api.agentop.dev/v1/__gw__/t/8317"
+      api_key_env: OPENAI_API_KEY
+
+  default: "agentop/${LLM_MODEL}"
+
+  roles:
+    analysis: "agentop/${LLM_MODEL}"
+    chat: "agentop/${LLM_MODEL}"
+
   permissions:
     dangerous_tools: [restart_container, exec_container]
     dangerous_host_allowlist: [prod]
@@ -91,6 +102,8 @@ agent:
     telegram: []
 
 defaults:
+  llm:
+    enabled: true
   schedules_mode: append
   schedules:
     - name: default

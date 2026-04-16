@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from logdog.llm.analyzer import analyze_with_template
-from logdog.llm.provider import resolve_llm_params
+from logdog.llm.provider import resolve_for_role, resolve_llm_params
 from logdog.notify.render import render_output
 
 
@@ -231,7 +231,22 @@ class ScheduleReportRunner:
             "metrics": summaries,
         }
         scene = _normalize_scene(schedule.get("template") or "daily")
-        analysis = self._analyze(scene, context, scene)
+        llm_params = resolve_for_role("analysis", self._llm_config)
+        analysis = await _invoke_analyze(
+            self._analyze,
+            scene,
+            context,
+            scene,
+            enable_agent=True,
+            agent_fallback=None,
+            model=llm_params.model or None,
+            api_base=llm_params.api_base or None,
+            api_key=llm_params.api_key or None,
+            provider_type=llm_params.provider_type or None,
+        )
+        if analysis is None:
+            # LLM failed — use summaries directly
+            analysis = "\n".join(summaries) if summaries else "[No data]"
         pushed = True
         if self._send_global_notification is not None:
             pushed = bool(
@@ -653,12 +668,18 @@ def _resolve_host_llm_params(
     host_config: dict[str, Any],
     global_llm_config: dict[str, Any] | None = None,
 ) -> Any:
-    """Extract LLM params from host config, falling back to global llm config."""
+    """Extract LLM params from host config, falling back to global llm config.
+
+    Uses the ``analysis`` role when resolving through the global config so that
+    ``roles.analysis`` in the YAML is effective.
+    """
     llm_cfg = host_config.get("llm") if isinstance(host_config.get("llm"), dict) else None
-    if llm_cfg is None:
-        llm_cfg = global_llm_config
-    llm_model = (llm_cfg or {}).get("default_model") or (llm_cfg or {}).get("model") or None
-    return resolve_llm_params(llm_model, llm_cfg)
+    if llm_cfg is not None:
+        # Per-host LLM config: resolve directly (host overrides role mapping)
+        llm_model = (llm_cfg.get("default_model") or llm_cfg.get("model") or None)
+        return resolve_llm_params(llm_model, llm_cfg)
+    # No per-host config: use global config with role-based resolution
+    return resolve_for_role("analysis", global_llm_config)
 
 
 def _resolve_schedule_analysis_mode(
