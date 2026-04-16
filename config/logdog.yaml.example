@@ -1,6 +1,6 @@
 # =====================================================================
-# LogWatch 配置文件
-# 复制为 config/logwatch.yaml 后按需修改
+# LogDog 配置文件
+# 复制为 config/logdog.yaml 后按需修改
 #
 # 核心概念:
 #   channels  - 定义消息通道（Telegram/WeCom/Weixin 等）
@@ -36,7 +36,7 @@ metrics:
 
 # ── 存储 ──────────────────────────────────────────────────
 storage:
-  db_path: data/logwatch.db
+  db_path: data/logdog.db
   sqlite:
     journal_mode: wal
     synchronous: normal
@@ -216,7 +216,7 @@ notify:
 # =====================================================================
 # LLM 配置
 #
-# LogWatch 使用 LLM 对日志告警进行智能分析（摘要、根因推断等）。
+# LogDog 使用 LLM 对日志告警进行智能分析（摘要、根因推断等）。
 # 关闭 enabled 后退回纯文本模式，不调用任何 LLM。
 #
 # ── 两种配置方式 ──
@@ -295,7 +295,7 @@ defaults:
       interval_seconds: 300
   containers:
     exclude:
-      - logwatch
+      - logdog
   watch:
     queue_maxsize: 1024
     worker_count: 2
@@ -316,13 +316,21 @@ defaults:
 #   containers      - 容器筛选 + 容器级自定义配置
 #
 # ── 可用的模板 ──
-#   prompt_template: default_alert / default_daily / default_hourly /
-#                    default_heartbeat / default_interval
+#   prompt_template: default_alert / alert_brief / alert_detailed /
+#                    alert_security / crash_analysis / deployment_check /
+#                    incident_commander / perf_regression / dependency_outage /
+#                    default_daily / daily_executive / daily_ops /
+#                    default_hourly / default_heartbeat / default_interval
 #                    (或自定义: 放在 templates/prompts/ 目录下)
 #
 #   output_template: standard / brief / detailed / ops_friendly /
-#                    business / heartbeat
+#                    business / heartbeat / oncall_action /
+#                    executive_summary / postmortem
 #                    (或自定义: 放在 templates/output/ 目录下)
+#
+#   preprocessors: dedup / level_filter / json_extract /
+#                  kv_extract / head_tail
+#                  (或自定义: 放在 templates/preprocessors/ 目录下)
 # =====================================================================
 hosts:
   # ── 本地开发 ──
@@ -344,7 +352,7 @@ hosts:
   #     # 只监听这些容器 (不配 include = 监听全部)
   #     include: [api, api-*, worker-*, nginx, redis]
   #     # 排除这些容器
-  #     exclude: [logwatch, tmp-*]
+  #     exclude: [logdog, tmp-*]
   #
   #     # ── 容器级自定义 ──
   #     # 支持精确名称或通配符 (fnmatch)
@@ -383,13 +391,13 @@ hosts:
   #   notify:
   #     channels: [staging-tel]
   #   containers:
-  #     exclude: [logwatch]
+  #     exclude: [logdog]
 
 
 # =====================================================================
 # 快速上手（最简配置）
 #
-# 1. 复制本文件为 config/logwatch.yaml
+# 1. 复制本文件为 config/logdog.yaml
 # 2. 复制 .env.example 为 .env
 # 3. 在 .env 中填入:
 #      BOTTOKEN1=你的BotToken

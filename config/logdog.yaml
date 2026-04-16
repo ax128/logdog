@@ -82,6 +82,9 @@ notify:
 llm:
   enabled: true
   model: "openai:${LLM_MODEL}"
+  permissions:
+    dangerous_tools: [restart_container, exec_container]
+    dangerous_host_allowlist: [prod]
 
 agent:
   authorized_users:

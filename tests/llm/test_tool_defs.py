@@ -7,6 +7,7 @@ def test_all_eight_tools_defined() -> None:
     expected = {
         "list_hosts", "list_containers", "query_logs", "get_metrics",
         "get_alerts", "mute_alert", "unmute_alert", "restart_container",
+        "get_system_metrics", "list_alert_mutes", "get_storm_events", "exec_container",
     }
     assert set(TOOL_METAS.keys()) == expected
 
@@ -64,3 +65,14 @@ def test_build_args_schema_accepts_valid_input() -> None:
     schema = build_args_schema(meta["name"], meta["parameters"])
     instance = schema(host="prod")
     assert instance.host == "prod"
+
+
+def test_get_system_metrics_schema_requires_host_name() -> None:
+    meta = TOOL_METAS["get_system_metrics"]
+    schema = build_args_schema(meta["name"], meta["parameters"])
+    import pytest
+    from pydantic import ValidationError
+    with pytest.raises(ValidationError):
+        schema()
+    instance = schema(host_name="prod-a")
+    assert instance.host_name == "prod-a"

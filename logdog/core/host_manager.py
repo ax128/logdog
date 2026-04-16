@@ -54,6 +54,7 @@ class HostManager:
         connector: HostConnector | None = None,
         sleep_fn: SleepFn | None = None,
         max_retries: int = 3,
+        connect_timeout: float = 30.0,
         circuit_break_threshold: int = 3,
         circuit_break_seconds: int = 60,
         time_fn: TimeFn | None = None,
@@ -62,6 +63,8 @@ class HostManager:
     ) -> None:
         if max_retries <= 0:
             raise ValueError("max_retries must be > 0")
+        if connect_timeout <= 0:
+            raise ValueError("connect_timeout must be > 0")
         if circuit_break_threshold <= 0:
             raise ValueError("circuit_break_threshold must be > 0")
         if circuit_break_seconds <= 0:
@@ -71,6 +74,7 @@ class HostManager:
         self._connector = connector
         self._sleep_fn = sleep_fn or asyncio.sleep
         self._max_retries = int(max_retries)
+        self._connect_timeout = float(connect_timeout)
         self._circuit_break_threshold = int(circuit_break_threshold)
         self._circuit_break_seconds = int(circuit_break_seconds)
         self._time_fn = time_fn or time.time
@@ -264,7 +268,7 @@ class HostManager:
             return {}
         result = self._connector(deepcopy(host))
         if inspect.isawaitable(result):
-            result = await result
+            result = await asyncio.wait_for(result, timeout=self._connect_timeout)
         if result is None:
             return {}
         if not isinstance(result, dict):
@@ -342,6 +346,8 @@ def _backoff_seconds(attempt: int) -> float:
 
 
 def _classify_connect_error(exc: Exception) -> str:
+    if isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
+        return "network"
     text = str(exc).lower()
     if any(token in text for token in ("auth", "permission denied", "publickey")):
         return "auth"

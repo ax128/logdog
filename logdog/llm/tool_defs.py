@@ -92,6 +92,83 @@ TOOL_METAS: dict[str, dict[str, Any]] = {
             },
         },
     },
+    "get_system_metrics": {
+        "name": "get_system_metrics",
+        "description": "Query host system metrics (CPU, memory, disk, load).",
+        "read_only": True,
+        "parameters": {
+            "host_name": {
+                "type": "string",
+                "description": "Host name, e.g. 'local' or 'prod'",
+                "required": True,
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Max data points to return",
+                "required": False,
+                "default": 20,
+            },
+        },
+    },
+    "list_alert_mutes": {
+        "name": "list_alert_mutes",
+        "description": "List currently active alert mute rules.",
+        "read_only": True,
+        "parameters": {
+            "limit": {
+                "type": "integer",
+                "description": "Max mute records to return",
+                "required": False,
+                "default": 50,
+            },
+        },
+    },
+    "get_storm_events": {
+        "name": "get_storm_events",
+        "description": "Query alert storm event records.",
+        "read_only": True,
+        "parameters": {
+            "limit": {
+                "type": "integer",
+                "description": "Max storm events to return",
+                "required": False,
+                "default": 20,
+            },
+            "category": {
+                "type": "string",
+                "description": "Optional event category filter",
+                "required": False,
+                "default": None,
+            },
+        },
+    },
+    "exec_container": {
+        "name": "exec_container",
+        "description": "Execute a command inside a container. Requires confirmed=true.",
+        "read_only": False,
+        "parameters": {
+            "host": {
+                "type": "string",
+                "description": "Host name, e.g. 'local' or 'prod'",
+                "required": True,
+            },
+            "container_id": {
+                "type": "string",
+                "description": "Container name or id",
+                "required": True,
+            },
+            "command": {
+                "type": "string",
+                "description": "Command to run inside the container",
+                "required": True,
+            },
+            "confirmed": {
+                "type": "boolean",
+                "description": "Must be true to confirm command execution",
+                "required": True,
+            },
+        },
+    },
 }
 
 

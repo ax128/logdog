@@ -1,13 +1,25 @@
+# -- build stage: compile C extensions --
+FROM python:3.13-slim AS builder
+
+WORKDIR /build
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc libffi-dev && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY pyproject.toml .
+RUN pip install --no-cache-dir --prefix=/install ".[langchain]"
+
+# -- runtime stage: no compiler toolchain --
 FROM python:3.13-slim
 
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc libffi-dev openssh-client && \
+    openssh-client && \
     rm -rf /var/lib/apt/lists/*
 
-COPY pyproject.toml .
-RUN pip install --no-cache-dir ".[langchain]"
+COPY --from=builder /install /usr/local
 
 COPY . .
 

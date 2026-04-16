@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import pytest
-
 from logdog.notify.telegram import telegram_markdown_retryable, telegram_markdown_unsafe
 
 

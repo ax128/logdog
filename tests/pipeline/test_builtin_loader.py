@@ -3,8 +3,6 @@ from __future__ import annotations
 from pathlib import Path
 from textwrap import dedent
 
-import pytest
-
 from logdog.pipeline.preprocessor.base import LogLine
 from logdog.pipeline.preprocessor.loader import load_builtin_preprocessors, load_preprocessors
 

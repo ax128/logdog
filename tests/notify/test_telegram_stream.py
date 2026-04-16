@@ -3,9 +3,7 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import MagicMock
 
-import pytest
-
-from logdog.notify.telegram import TelegramStreamSender, _STREAM_EDIT_MIN_INTERVAL_SEC
+from logdog.notify.telegram import TelegramStreamSender
 
 
 def _make_bot_mock() -> MagicMock:
@@ -106,7 +104,6 @@ class TestTelegramStreamSenderFinalize:
 
         # Reset side_effect for retry
         call_count = 0
-        original_side_effect = bot.edit_message_text.side_effect
 
         def side_effect_fn(*args: Any, **kwargs: Any) -> Any:
             nonlocal call_count

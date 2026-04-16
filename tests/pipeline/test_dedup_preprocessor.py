@@ -21,7 +21,7 @@ def test_dedup_empty_input():
 
 def test_dedup_no_repeats_passes_through():
     lines = [_line("a"), _line("b"), _line("c")]
-    assert [l.content for l in DedupPreprocessor().process(lines)] == ["a", "b", "c"]
+    assert [item.content for item in DedupPreprocessor().process(lines)] == ["a", "b", "c"]
 
 
 def test_dedup_run_within_threshold_kept_intact():
@@ -57,7 +57,12 @@ def test_dedup_invalid_config_clamped_to_one():
 
 def test_dedup_non_consecutive_repeats_not_collapsed():
     lines = [_line("a"), _line("b"), _line("a"), _line("b")]
-    assert [l.content for l in DedupPreprocessor().process(lines)] == ["a", "b", "a", "b"]
+    assert [item.content for item in DedupPreprocessor().process(lines)] == [
+        "a",
+        "b",
+        "a",
+        "b",
+    ]
 
 
 def test_dedup_multiple_runs_in_one_batch():

@@ -91,20 +91,22 @@ async def test_log_stream_watcher_applies_preprocessors_and_skips_muted_alerts()
     assert len(notifications) == 1
     assert notifications[0][0] == "host-a"
     assert notifications[0][2] == "ERROR"
-    assert "Host: host-a" in notifications[0][1]
-    assert "Container: svc-api" in notifications[0][1]
-    assert "Timestamp: 2026-04-11T10:00:02Z" in notifications[0][1]
+    assert "host-a / svc-api" in notifications[0][1]
+    assert "主机：host-a" in notifications[0][1]
+    assert "容器：svc-api" in notifications[0][1]
+    assert "时间：2026-04-11T10:00:02Z" in notifications[0][1]
     assert "ERROR live event [preprocessed]" in notifications[0][1]
-    assert metrics_writer.alerts == [
-        {
-            "host": "host-a",
-            "container_id": "c1",
-            "category": "ERROR",
-            "line": "ERROR live event [preprocessed]",
-            "analysis": "Host: host-a\nContainer: svc-api\nTimestamp: 2026-04-11T10:00:02Z\nERROR live event [preprocessed]",
-            "pushed": True,
-        }
-    ]
+    assert len(metrics_writer.alerts) == 1
+    saved_alert = metrics_writer.alerts[0]
+    assert saved_alert["host"] == "host-a"
+    assert saved_alert["container_id"] == "c1"
+    assert saved_alert["category"] == "ERROR"
+    assert saved_alert["line"] == "ERROR live event [preprocessed]"
+    assert saved_alert["pushed"] is True
+    assert "主机：host-a" in saved_alert["analysis"]
+    assert "容器：svc-api" in saved_alert["analysis"]
+    assert "时间：2026-04-11T10:00:02Z" in saved_alert["analysis"]
+    assert "ERROR live event [preprocessed]" in saved_alert["analysis"]
 
 
 @pytest.mark.asyncio

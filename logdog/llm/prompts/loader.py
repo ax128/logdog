@@ -43,6 +43,14 @@ _PROMPT_ALIASES = {
     # deployment scene (new)
     "deployment": "deployment_check",
     "deployment_check": "deployment_check",
+    # advanced alert analysis scenes
+    "incident": "incident_commander",
+    "incident_commander": "incident_commander",
+    "perf": "perf_regression",
+    "performance": "perf_regression",
+    "perf_regression": "perf_regression",
+    "dependency": "dependency_outage",
+    "dependency_outage": "dependency_outage",
 }
 _BUILTIN_TEMPLATE_TEXTS = {
     # Minimal one-liner fallbacks used when the .md file is missing.
@@ -58,6 +66,9 @@ _BUILTIN_TEMPLATE_TEXTS = {
     "default_heartbeat": "心跳检查 {host_name} 时间: {timestamp} 容器数: {total_containers}\n{container_status}",
     "crash_analysis": "主机: {host_name} | 容器: {container_name} | 时间: {timestamp}\n退出码: {exit_code} | 重启次数: {restart_count}\n{logs}\n请分析崩溃原因并给出修复建议。",
     "deployment_check": "主机: {host_name} | 容器: {container_name} | 时间: {timestamp}\n镜像: {image_tag}\n{logs}\n请评估部署结果是否成功。",
+    "incident_commander": "主机: {host_name} | 容器: {container_name} | 时间: {timestamp}\n日志:\n{logs}\n请给出分级、证据链、根因假设、分阶段处置与验证闭环。",
+    "perf_regression": "主机: {host_name} | 容器: {container_name} | 时间: {timestamp}\n日志:\n{logs}\n请分析性能劣化证据、瓶颈位置、优化建议与回归验证指标。",
+    "dependency_outage": "主机: {host_name} | 容器: {container_name} | 时间: {timestamp}\n日志:\n{logs}\n请判断依赖故障类型并给出隔离、降级、恢复方案。",
 }
 
 

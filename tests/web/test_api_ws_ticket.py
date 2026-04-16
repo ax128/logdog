@@ -1,7 +1,6 @@
 import asyncio
 
 import httpx
-import pytest
 
 from logdog.llm.agent_runtime import DEFAULT_CHAT_FALLBACK_MESSAGE
 from logdog.main import create_app

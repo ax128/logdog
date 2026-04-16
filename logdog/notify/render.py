@@ -14,6 +14,9 @@ _OUTPUT_TEMPLATE_NAMES = {
     "ops_friendly",
     "business",
     "heartbeat",
+    "oncall_action",
+    "executive_summary",
+    "postmortem",
 }
 
 

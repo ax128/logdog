@@ -8,7 +8,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Query
 
 
-ReloadAction = Callable[[], Awaitable[dict[str, bool] | None] | dict[str, bool] | None]
+ReloadAction = Callable[[], Awaitable[dict[str, Any] | None] | dict[str, Any] | None]
 ListSendFailedAction = Callable[
     [int], Awaitable[list[dict[str, Any]] | None] | list[dict[str, Any]] | None
 ]
@@ -88,11 +88,11 @@ def verify_web_token(auth_header: str | None, web_auth_token: str) -> None:
         raise PermissionError("invalid web token")
 
 
-def _reload_payload() -> dict[str, bool]:
+def _reload_payload() -> dict[str, Any]:
     return {"ok": True}
 
 
-async def _run_reload_action(reload_action: ReloadAction | None) -> dict[str, bool]:
+async def _run_reload_action(reload_action: ReloadAction | None) -> dict[str, Any]:
     if reload_action is None:
         return _reload_payload()
 
@@ -104,7 +104,7 @@ async def _run_reload_action(reload_action: ReloadAction | None) -> dict[str, bo
         return _reload_payload()
     if isinstance(result, dict):
         return result
-    raise RuntimeError("reload_action must return dict[str, bool] or None")
+    raise RuntimeError("reload_action must return dict[str, Any] or None")
 
 
 async def _run_list_send_failed_action(
@@ -309,7 +309,7 @@ def _build_auth_handlers(
 ) -> tuple[
     Callable[[str | None], Awaitable[None]],
     Callable[[str | None], Awaitable[None]],
-    Callable[[], Awaitable[dict[str, bool]]],
+    Callable[[], Awaitable[dict[str, Any]]],
 ]:
     async def require_web_user(
         authorization: str | None = Header(default=None),
@@ -325,7 +325,7 @@ def _build_auth_handlers(
         except PermissionError as exc:
             raise HTTPException(status_code=403, detail="forbidden") from exc
 
-    async def reload_config(_: None = Depends(require_admin)) -> dict[str, bool]:
+    async def reload_config(_: None = Depends(require_admin)) -> dict[str, Any]:
         try:
             return await _run_reload_action(reload_action)
         except Exception as exc:  # noqa: BLE001

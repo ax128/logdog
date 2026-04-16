@@ -27,19 +27,19 @@ def test_level_filter_default_min_warn_drops_debug_info():
         _line("e", level="error"),
     ]
     result = LevelFilterPreprocessor().process(lines)
-    assert [l.level for l in result] == ["warn", "error"]
+    assert [item.level for item in result] == ["warn", "error"]
 
 
 def test_level_filter_min_error_drops_warn():
     lines = [_line("w", level="warn"), _line("e", level="error"), _line("f", level="fatal")]
     result = LevelFilterPreprocessor(config={"min_level": "error"}).process(lines)
-    assert [l.level for l in result] == ["error", "fatal"]
+    assert [item.level for item in result] == ["error", "fatal"]
 
 
 def test_level_filter_min_debug_keeps_all():
     lines = [_line("x", level=lv) for lv in ["debug", "info", "warn", "error"]]
     result = LevelFilterPreprocessor(config={"min_level": "debug"}).process(lines)
-    assert [l.level for l in result] == ["debug", "info", "warn", "error"]
+    assert [item.level for item in result] == ["debug", "info", "warn", "error"]
 
 
 def test_level_filter_unknown_level_kept_fail_open():
@@ -71,4 +71,4 @@ def test_level_filter_unknown_min_level_falls_back_to_warn(caplog):
     assert any("verbose" in r.message for r in caplog.records)
     # falls back to warn: debug line dropped, warn line kept
     lines = [_line("d", level="debug"), _line("w", level="warn")]
-    assert [l.level for l in p.process(lines)] == ["warn"]
+    assert [item.level for item in p.process(lines)] == ["warn"]

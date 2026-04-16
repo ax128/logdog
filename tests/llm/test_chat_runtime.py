@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import Any
 from unittest.mock import MagicMock
@@ -130,6 +131,22 @@ def test_wrap_registered_tool_uses_lc_tool_with_schema() -> None:
     assert wrapped.name == "list_containers"
     assert wrapped.args_schema is not None
     assert "host" in wrapped.args_schema.model_fields
+
+
+def test_wrap_registered_tool_returns_error_message_when_tool_raises() -> None:
+    from logdog.llm.agent_runtime import _wrap_registered_tool
+
+    class _FailingTool:
+        name = "list_hosts"
+        description = "List hosts."
+        read_only = True
+
+        async def invoke(self, *, user_id: str, arguments: dict) -> dict:
+            raise ValueError("boom")
+
+    wrapped = _wrap_registered_tool(_FailingTool())
+    output = asyncio.run(wrapped.ainvoke({}))
+    assert output == "[ERROR] boom"
 
 
 # ---------------------------------------------------------------------------

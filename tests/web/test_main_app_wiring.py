@@ -50,7 +50,14 @@ def test_main_app_exposes_reload_route_and_admin_guard() -> None:
     denied, ok = asyncio.run(run_case())
     assert denied.status_code == 403
     assert ok.status_code == 200
-    assert ok.json() == {"ok": True}
+    payload = ok.json()
+    assert payload.get("ok") is True
+    if "added" in payload:
+        assert isinstance(payload["added"], list)
+    if "updated" in payload:
+        assert isinstance(payload["updated"], list)
+    if "removed_requires_restart" in payload:
+        assert isinstance(payload["removed_requires_restart"], list)
 
 
 def test_main_app_registers_ws_chat_route_and_returns_fallback_response() -> None:

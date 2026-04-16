@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -319,3 +320,35 @@ async def test_circuit_breaker_skips_connect_until_window_expires(
     now["ts"] = 131.0
     await manager.startup_check()
     assert len(connector_calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_connector_timeout_marks_host_disconnected() -> None:
+    """A connector that hangs beyond connect_timeout should be aborted."""
+
+    async def slow_connector(host: dict) -> dict:
+        await asyncio.sleep(999)
+        return {"server_version": "24.0.7"}
+
+    sleep_calls: list[float] = []
+
+    async def fake_sleep(secs: float) -> None:
+        sleep_calls.append(secs)
+
+    manager = HostManager(
+        hosts=[{"name": "slow", "url": "unix:///var/run/docker.sock"}],
+        connector=slow_connector,
+        connect_timeout=0.05,
+        max_retries=1,
+        sleep_fn=fake_sleep,
+    )
+    await manager.startup_check()
+    statuses = manager.list_host_statuses()
+
+    assert len(statuses) == 1
+    assert statuses[0]["name"] == "slow"
+    assert statuses[0]["status"] == "disconnected"
+
+    state = manager.get_host_state("slow")
+    assert state is not None
+    assert state["last_error_kind"] == "network"

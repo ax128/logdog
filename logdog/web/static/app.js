@@ -6,7 +6,7 @@ const APP_ENDPOINTS = {
 };
 
 const STORAGE_KEYS = {
-  session: 'logwatch.chat.session',
+  session: 'logdog.chat.session',
 };
 
 const POLL_INTERVAL_MS = 15000;
@@ -467,7 +467,7 @@ function roleLabel(role) {
     return 'Operator';
   }
   if (role === 'assistant') {
-    return 'LogWatch Agent';
+    return 'LogDog Agent';
   }
   return 'System';
 }

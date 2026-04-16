@@ -31,12 +31,14 @@ def _builtin_registry() -> dict[str, type[BasePreprocessor]]:
     from logdog.pipeline.preprocessor.dedup import DedupPreprocessor
     from logdog.pipeline.preprocessor.head_tail import HeadTailPreprocessor
     from logdog.pipeline.preprocessor.json_extract import JsonExtractPreprocessor
+    from logdog.pipeline.preprocessor.kv_extract import KvExtractPreprocessor
     from logdog.pipeline.preprocessor.level_filter import LevelFilterPreprocessor
 
     return {
         "dedup": DedupPreprocessor,
         "head_tail": HeadTailPreprocessor,
         "json_extract": JsonExtractPreprocessor,
+        "kv_extract": KvExtractPreprocessor,
         "level_filter": LevelFilterPreprocessor,
     }
 
@@ -49,7 +51,7 @@ def load_builtin_preprocessors(
     """Resolve and instantiate preprocessors from a list of config dicts.
 
     Name resolution order for each {"name": "..."} entry:
-    1. Built-in registry (dedup, level_filter, json_extract, head_tail).
+    1. Built-in registry (dedup, level_filter, json_extract, kv_extract, head_tail).
     2. templates/preprocessors/<name>.py (or templates_dir override).
     Unknown names are skipped with a warning.
     """

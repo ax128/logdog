@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import re
 from copy import deepcopy
@@ -43,13 +44,23 @@ _SQLITE_SYNCHRONOUS_MODES = {"off", "normal", "full", "extra"}
 _INT_LIKE_PATTERN = re.compile(r"^[+-]?\d+$")
 _ENV_VAR_PATTERN = re.compile(r"\$\{([^}]+)\}")
 
+_config_logger = logging.getLogger(__name__)
+
 
 def _resolve_env_ref(expr: str) -> str:
     """Resolve ``${VAR}`` or ``${VAR:-default}`` expressions."""
     if ":-" in expr:
         var, _, default = expr.partition(":-")
         return os.environ.get(var.strip(), default)
-    return os.environ.get(expr.strip(), "")
+    var = expr.strip()
+    value = os.environ.get(var)
+    if value is None:
+        _config_logger.warning(
+            "environment variable ${%s} is not set, substituting empty string",
+            var,
+        )
+        return ""
+    return value
 
 
 def _expand_env_vars(value: Any) -> Any:

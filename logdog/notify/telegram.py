@@ -101,11 +101,17 @@ class TelegramBotTokenSender:
     def send(self, target: str, message: str, parse_mode: str = "") -> None:
         chat_id = str(target or "").strip()
         if chat_id == "" or chat_id == TELEGRAM_AUTO_TARGET:
-            # Prefer chat_id pinned by bot runtime over getUpdates (polling conflict).
             if self._pinned_chat_id:
+                # Use chat_id pinned by bot runtime (avoids getUpdates/polling conflict).
                 chat_id = self._pinned_chat_id
             else:
-                chat_id = self._resolve_auto_chat_id()
+                # No pinned chat_id yet — skip rather than call getUpdates which
+                # would conflict with start_polling on the same token.
+                logger.debug(
+                    "telegram send skipped: no chat_id pinned yet "
+                    "(send a message to the bot to activate push notifications)"
+                )
+                return
         self.send_message(chat_id, str(message), parse_mode=parse_mode)
 
     def send_message(

@@ -113,6 +113,85 @@ def test_render_output_renders_heartbeat_template() -> None:
     assert "disk usage recovered" in rendered
 
 
+def test_render_output_renders_oncall_action_template() -> None:
+    render_module = _import_render_module()
+
+    rendered = render_module.render_output(
+        "oncall_action",
+        {
+            "severity": "CRITICAL",
+            "host_name": "prod-a",
+            "container_name": "api",
+            "llm_summary": "Error rate surged after config reload",
+            "llm_impact": "Checkout failure rate > 20%",
+            "llm_actions": "rollback config; restart worker pool; verify downstream DB",
+            "log_snippet": "timeout while calling payment-db",
+            "cpu": 88,
+            "mem_used": "760MiB",
+            "mem_limit": "1GiB",
+            "restart_count": 2,
+            "timestamp": "2026-04-11T10:00:00Z",
+            "category": "ERROR",
+        },
+    )
+
+    assert "CRITICAL" in rendered
+    assert "prod-a/api" in rendered
+    assert "Checkout failure rate > 20%" in rendered
+    assert "rollback config" in rendered
+
+
+def test_render_output_renders_postmortem_template() -> None:
+    render_module = _import_render_module()
+
+    rendered = render_module.render_output(
+        "postmortem",
+        {
+            "severity": "HIGH",
+            "host_name": "prod-a",
+            "container_name": "api",
+            "llm_summary": "Intermittent 5xx due to DB saturation",
+            "llm_timeline": "10:00 latency rise; 10:08 timeout burst",
+            "llm_causes": "Connection pool exhaustion under burst traffic",
+            "llm_impact": "Order placement degraded",
+            "llm_actions": "Scale DB read replicas and tune pool size",
+            "log_snippet": "pq: sorry, too many clients already",
+            "metrics_detail": "cpu=92% mem=75%",
+            "category": "RESOURCE",
+            "timestamp": "2026-04-11T10:10:00Z",
+        },
+    )
+
+    assert "HIGH" in rendered
+    assert "Intermittent 5xx due to DB saturation" in rendered
+    assert "Connection pool exhaustion under burst traffic" in rendered
+    assert "Scale DB read replicas and tune pool size" in rendered
+
+
+def test_render_output_renders_executive_summary_template() -> None:
+    render_module = _import_render_module()
+
+    rendered = render_module.render_output(
+        "executive_summary",
+        {
+            "container_name": "api",
+            "severity": "HIGH",
+            "llm_impact": "Checkout success rate dropped",
+            "llm_business_metrics": "conversion -9%",
+            "llm_summary": "Rollback completed and error rate is decreasing",
+            "llm_recovery_time": "20 minutes",
+            "timestamp": "2026-04-11T10:15:00Z",
+            "host_name": "prod-a",
+        },
+    )
+
+    assert "api" in rendered
+    assert "HIGH" in rendered
+    assert "Checkout success rate dropped" in rendered
+    assert "conversion -9%" in rendered
+    assert "20 minutes" in rendered
+
+
 def test_render_output_rejects_unknown_template_name() -> None:
     render_module = _import_render_module()
 
