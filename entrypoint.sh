@@ -58,6 +58,14 @@ BLOCK
         cat <<'BLOCK'
     StrictHostKeyChecking accept-new
 BLOCK
+    elif grep -q 'ssh://' /app/config/logdog.yaml 2>/dev/null; then
+        # Config has ssh:// URLs but all hostnames are env-var references
+        # that we cannot resolve at shell level — fall back to accept-new
+        # for all hosts so first connect succeeds.
+        cat <<'BLOCK'
+Host *
+    StrictHostKeyChecking accept-new
+BLOCK
     fi
 
     # Common settings for all hosts
