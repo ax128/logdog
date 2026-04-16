@@ -302,6 +302,11 @@ def build_analyzer_runtime(
         else:
             factory_kwargs["model"] = model
 
+    logger.info(
+        "build_analyzer_runtime: model_type=%s model_value=%s",
+        type(factory_kwargs.get("model")).__name__,
+        factory_kwargs.get("model") if isinstance(factory_kwargs.get("model"), str) else type(factory_kwargs.get("model")).__name__,
+    )
     try:
         agent = factory(**factory_kwargs)
     except Exception:  # noqa: BLE001 - analyzer must fall back to plaintext path

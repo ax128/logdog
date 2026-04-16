@@ -743,7 +743,7 @@ def create_app(
                 "metrics_writer": watcher_metrics_writer,
                 "prompt_template": str(host.get("prompt_template") or "default_alert"),
                 "output_template": str(host.get("output_template") or "standard"),
-                "config": host,
+                "config": _inject_host_llm_config(host, current_app_config),
                 "preprocessors": load_preprocessors(
                     builtin_configs=_resolve_host_preprocessor_configs(host)
                 ),
@@ -763,7 +763,7 @@ def create_app(
                 "mute_checker": mute_checker,
                 "prompt_template": str(host.get("prompt_template") or "default_alert"),
                 "output_template": str(host.get("output_template") or "standard"),
-                "config": host,
+                "config": _inject_host_llm_config(host, current_app_config),
                 "cooldown_store": CooldownStore(),
                 "refresh_host": (
                     None if manager_ref is None else manager_ref.refresh_host
@@ -1331,6 +1331,32 @@ def _resolve_app_default_analysis_mode(app_config: dict[str, Any] | None) -> str
     if enabled is False:
         return "script"
     return None
+
+
+def _inject_host_llm_config(
+    host: dict[str, Any], app_config: dict[str, Any] | None
+) -> dict[str, Any]:
+    """Merge global LLM config into host config so alert pipeline can resolve providers.
+
+    When the host has a skeleton LLM config (e.g. just ``{enabled: true}`` from
+    defaults), the global providers/default/roles are merged underneath so that
+    provider resolution works.  Explicit per-host keys win over global ones.
+    """
+    if not isinstance(app_config, dict):
+        return host
+    global_llm = app_config.get("llm")
+    if not isinstance(global_llm, dict):
+        return host
+    host_llm = host.get("llm")
+    merged = dict(host)
+    if isinstance(host_llm, dict):
+        # Merge: global as base, host-level overrides on top
+        combined = dict(global_llm)
+        combined.update(host_llm)
+        merged["llm"] = combined
+    else:
+        merged["llm"] = dict(global_llm)
+    return merged
 
 
 def _resolve_app_config(

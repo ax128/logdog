@@ -674,12 +674,20 @@ def _resolve_host_llm_params(
     ``roles.analysis`` in the YAML is effective.
     """
     llm_cfg = host_config.get("llm") if isinstance(host_config.get("llm"), dict) else None
-    if llm_cfg is not None:
-        # Per-host LLM config: resolve directly (host overrides role mapping)
+    if llm_cfg is not None and _has_model_config(llm_cfg):
+        # Per-host LLM config with actual model settings: resolve directly
         llm_model = (llm_cfg.get("default_model") or llm_cfg.get("model") or None)
         return resolve_llm_params(llm_model, llm_cfg)
-    # No per-host config: use global config with role-based resolution
+    # No per-host model config: use global config with role-based resolution
     return resolve_for_role("analysis", global_llm_config)
+
+
+def _has_model_config(llm_cfg: dict[str, Any]) -> bool:
+    """Check if an LLM config dict has actual model settings (not just 'enabled')."""
+    return bool(
+        llm_cfg.get("default") or llm_cfg.get("default_model")
+        or llm_cfg.get("model") or llm_cfg.get("providers")
+    )
 
 
 def _resolve_schedule_analysis_mode(

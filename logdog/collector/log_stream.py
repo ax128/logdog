@@ -385,8 +385,7 @@ async def run_alert_once(
     dedup_key = (host, container_id, rule.matched_category)
     analysis_mode = _resolve_alert_analysis_mode(cfg)
     _llm_cfg = cfg.get("llm") if isinstance(cfg.get("llm"), dict) else None
-    _llm_model = (_llm_cfg or {}).get("default_model") or (_llm_cfg or {}).get("model") or None
-    _llm_params = resolve_llm_params(_llm_model, _llm_cfg)
+    _llm_params = resolve_llm_params(None, _llm_cfg)
 
     if mute_checker is not None:
         try:
@@ -487,7 +486,7 @@ async def run_alert_once(
                 prompt_template=prompt_template,
                 output_template=output_template,
                 analysis_mode=analysis_mode,
-                llm_model=_llm_model,
+                llm_model=None,
                 llm_config=_llm_cfg,
                 notifier_send=notifier_send,
                 save_alert=save_alert,
