@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from logdog.llm.analyzer import analyze_with_template
+from logdog.llm.provider import resolve_llm_params
 from logdog.notify.render import render_output
 
 
@@ -25,6 +26,8 @@ class ScheduleReportRunner:
         send_global_notification: Any | None = None,
         analyze: Any = analyze_with_template,
         time_fn: Any | None = None,
+        default_analysis_mode: str | None = None,
+        llm_config: dict[str, Any] | None = None,
     ) -> None:
         self._host_manager = host_manager
         self._list_containers = list_containers
@@ -38,6 +41,8 @@ class ScheduleReportRunner:
         self._analyze = analyze
         self._time_fn = time_fn or time.time
         self._last_host_emit_at: dict[str, float] = {}
+        self._default_analysis_mode = default_analysis_mode
+        self._llm_config = llm_config or {}
 
     async def run_host_schedule(
         self,
@@ -121,7 +126,10 @@ class ScheduleReportRunner:
             timestamp=now_dt.strftime("%Y-%m-%d %H:%M:%S"),
             scene=emit_scene,
         )
-        analysis_mode = _resolve_schedule_analysis_mode(host_config)
+        analysis_mode = _resolve_schedule_analysis_mode(
+            host_config, default=self._default_analysis_mode
+        )
+        llm_params = _resolve_host_llm_params(host_config, self._llm_config)
         if analysis_mode == "script":
             analysis = _build_script_schedule_analysis(
                 scene=emit_scene, context=context
@@ -134,8 +142,22 @@ class ScheduleReportRunner:
                 context,
                 emit_scene,
                 enable_agent=True,
+                agent_fallback=None,
+                model=llm_params.model or None,
+                api_base=llm_params.api_base or None,
+                api_key=llm_params.api_key or None,
+                provider_type=llm_params.provider_type or None,
             )
-            message = analysis
+            if analysis is None:
+                # LLM failed — fall back to output template rendering
+                message = _render_host_message(
+                    scene=emit_scene,
+                    host_config=host_config,
+                    context=context,
+                    analysis="",
+                )
+            else:
+                message = analysis
         else:
             analysis = await _invoke_analyze(
                 self._analyze,
@@ -143,6 +165,10 @@ class ScheduleReportRunner:
                 context,
                 emit_scene,
                 enable_agent=False,
+                model=llm_params.model or None,
+                api_base=llm_params.api_base or None,
+                api_key=llm_params.api_key or None,
+                provider_type=llm_params.provider_type or None,
             )
             message = _render_host_message(
                 scene=emit_scene,
@@ -496,12 +522,29 @@ async def _invoke_analyze(
     template: str,
     *,
     enable_agent: bool,
-) -> str:
+    agent_fallback: Any = None,
+    model: str | None = None,
+    api_base: str | None = None,
+    api_key: str | None = None,
+    provider_type: str | None = None,
+) -> str | None:
+    kwargs: dict[str, Any] = {"enable_agent": enable_agent}
+    if agent_fallback is not None:
+        kwargs["agent_fallback"] = agent_fallback
+    if model:
+        kwargs["model"] = model
+    if api_base:
+        kwargs["api_base"] = api_base
+    if api_key:
+        kwargs["api_key"] = api_key
+    if provider_type:
+        kwargs["provider_type"] = provider_type
     if _analyze_callable_accepts_enable_agent(analyze):
-        result = analyze(scene, context, template, enable_agent=enable_agent)
+        result = analyze(scene, context, template, **kwargs)
     else:
         result = analyze(scene, context, template)
-    return str(await _maybe_await(result))
+    result = await _maybe_await(result)
+    return None if result is None else str(result)
 
 
 def _analyze_callable_accepts_enable_agent(analyze: Any) -> bool:
@@ -594,12 +637,37 @@ def _render_host_message(
 ) -> str:
     if scene == "heartbeat":
         return render_output("heartbeat", context)
-    return analysis
+    if analysis:
+        return analysis
+    # LLM fallback: brief status instead of raw prompt
+    host_name = context.get("host_name", "unknown")
+    timestamp = context.get("timestamp", "")
+    metrics = context.get("metrics_text") or context.get("host_metrics_text") or ""
+    parts = [f"⚠️ [{host_name}] {scene} 周期检查 | {timestamp}", "LLM 分析暂不可用，以下为原始指标："]
+    if metrics:
+        parts.append(str(metrics).strip())
+    return "\n\n".join(parts)
 
 
-def _resolve_schedule_analysis_mode(host_config: dict[str, Any]) -> str:
+def _resolve_host_llm_params(
+    host_config: dict[str, Any],
+    global_llm_config: dict[str, Any] | None = None,
+) -> Any:
+    """Extract LLM params from host config, falling back to global llm config."""
+    llm_cfg = host_config.get("llm") if isinstance(host_config.get("llm"), dict) else None
+    if llm_cfg is None:
+        llm_cfg = global_llm_config
+    llm_model = (llm_cfg or {}).get("default_model") or (llm_cfg or {}).get("model") or None
+    return resolve_llm_params(llm_model, llm_cfg)
+
+
+def _resolve_schedule_analysis_mode(
+    host_config: dict[str, Any], *, default: str | None = None
+) -> str:
     llm_cfg = host_config.get("llm")
     if not isinstance(llm_cfg, dict):
+        if default in ("llm", "script", "legacy"):
+            return default
         return "legacy"
     if "enabled" not in llm_cfg:
         return "legacy"

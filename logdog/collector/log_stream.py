@@ -260,6 +260,7 @@ async def _flush_dedup_summary_after_delay(
             model=_dedup_params.model or None,
             api_base=_dedup_params.api_base or None,
             api_key=_dedup_params.api_key or None,
+            provider_type=_dedup_params.provider_type or None,
         )
     else:
         _dedup_params = resolve_llm_params(window.llm_model, window.llm_config)
@@ -271,6 +272,7 @@ async def _flush_dedup_summary_after_delay(
             model=_dedup_params.model or None,
             api_base=_dedup_params.api_base or None,
             api_key=_dedup_params.api_key or None,
+            provider_type=_dedup_params.provider_type or None,
         )
     message = _render_notification_message(
         output_template=window.output_template,
@@ -551,6 +553,7 @@ async def run_alert_once(
             model=_llm_params.model or None,
             api_base=_llm_params.api_base or None,
             api_key=_llm_params.api_key or None,
+            provider_type=_llm_params.provider_type or None,
         )
     else:
         analysis = analyze_with_template(
@@ -561,6 +564,7 @@ async def run_alert_once(
             model=_llm_params.model or None,
             api_base=_llm_params.api_base or None,
             api_key=_llm_params.api_key or None,
+            provider_type=_llm_params.provider_type or None,
         )
     message = _render_notification_message(
         output_template=output_template,
