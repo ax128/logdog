@@ -113,6 +113,31 @@ def test_analyze_with_template_passes_model_kwarg() -> None:
     assert out == "model-answer"
 
 
+def test_analyze_passes_provider_type_to_runtime(monkeypatch) -> None:
+    """Verify provider_type is forwarded to build_analyzer_runtime."""
+    captured: dict[str, Any] = {}
+
+    def fake_build_analyzer_runtime(**kwargs):
+        captured.update(kwargs)
+        return None
+
+    monkeypatch.setattr(
+        "logdog.llm.analyzer.build_analyzer_runtime",
+        fake_build_analyzer_runtime,
+    )
+    result = analyze_with_template(
+        "alert",
+        _alert_context(),
+        _StaticTemplate(),
+        enable_agent=True,
+        model="gpt-5.4",
+        api_base="https://example.com/v1",
+        api_key="key",
+        provider_type="openai",
+    )
+    assert captured.get("provider_type") == "openai"
+
+
 def test_analyze_with_template_model_kwarg_no_agent() -> None:
     """Verify model parameter works with enable_agent=False."""
     out = analyze_with_template(
