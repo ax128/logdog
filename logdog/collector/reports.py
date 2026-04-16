@@ -97,7 +97,7 @@ class ScheduleReportRunner:
         )
         push_on_normal = bool(notify_cfg.get("push_on_normal", False))
         heartbeat_interval = _to_int(
-            notify_cfg.get("heartbeat_interval_seconds"), default=0
+            notify_cfg.get("heartbeat_interval_seconds"), default=3600
         )
 
         emit_scene = scene

@@ -347,6 +347,10 @@ hosts:
   #   output_template: ops_friendly      # 该服务器的默认输出格式
   #   notify:
   #     channels: [prod-api-tel, prod-ops-tel, ops-wecom]
+  #     # 静默期内无告警推送时，强制发一次心跳（默认 3600 秒，0 = 禁用）
+  #     heartbeat_interval_seconds: 3600
+  #     # 每次定时检查都推送，即使系统正常（默认 false）
+  #     push_on_normal: false
   #
   #   containers:
   #     # 只监听这些容器 (不配 include = 监听全部)

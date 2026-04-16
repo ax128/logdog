@@ -258,6 +258,84 @@ async def test_report_runner_sends_heartbeat_when_normal_push_is_disabled() -> N
 
 
 @pytest.mark.asyncio
+async def test_report_runner_default_heartbeat_fires_after_one_hour() -> None:
+    """Without explicit heartbeat_interval_seconds, default 3600s kicks in."""
+    notifications: list[tuple[str, str, str]] = []
+    ScheduleReportRunner = _schedule_report_runner_cls()
+    clock = {"ts": 1000.0}
+    runner = ScheduleReportRunner(
+        host_manager=_HostManagerStub(
+            config={"name": "host-a", "notify": {}},
+            state={"name": "host-a", "status": "connected"},
+        ),
+        list_containers=lambda _host: [
+            {"id": "c1", "name": "api", "status": "running"}
+        ],
+        list_alerts=lambda **_kwargs: [],
+        query_metrics=lambda *_args, **_kwargs: [],
+        send_host_notification=lambda host, message, category: (
+            notifications.append((host, message, category)) or True
+        ),
+        analyze=lambda scene, context, template: (
+            f"{scene}|{template}|{context['host_name']}"
+        ),
+        time_fn=lambda: clock["ts"],
+    )
+
+    # First call: no previous emit → heartbeat fires immediately
+    first = await runner.run_host_schedule(
+        "host-a", {"name": "default", "interval_seconds": 300}
+    )
+    assert first["scene"] == "heartbeat"
+    assert first["sent"] is True
+
+    # Second call within 1 hour → suppressed
+    clock["ts"] = 1000.0 + 1800  # 30 min later
+    second = await runner.run_host_schedule(
+        "host-a", {"name": "default", "interval_seconds": 300}
+    )
+    assert second["sent"] is False
+
+    # Third call after 1 hour → heartbeat fires again
+    clock["ts"] = 1000.0 + 3601  # 1 hour + 1 sec later
+    third = await runner.run_host_schedule(
+        "host-a", {"name": "default", "interval_seconds": 300}
+    )
+    assert third["scene"] == "heartbeat"
+    assert third["sent"] is True
+    assert len(notifications) == 2
+
+
+@pytest.mark.asyncio
+async def test_report_runner_heartbeat_disabled_when_set_to_zero() -> None:
+    """heartbeat_interval_seconds: 0 explicitly disables heartbeat fallback."""
+    ScheduleReportRunner = _schedule_report_runner_cls()
+    runner = ScheduleReportRunner(
+        host_manager=_HostManagerStub(
+            config={
+                "name": "host-a",
+                "notify": {"heartbeat_interval_seconds": 0},
+            },
+            state={"name": "host-a", "status": "connected"},
+        ),
+        list_containers=lambda _host: [
+            {"id": "c1", "name": "api", "status": "running"}
+        ],
+        list_alerts=lambda **_kwargs: [],
+        query_metrics=lambda *_args, **_kwargs: [],
+        send_host_notification=lambda host, message, category: True,
+        analyze=lambda scene, context, template: "test",
+        time_fn=lambda: 1000.0,
+    )
+
+    result = await runner.run_host_schedule(
+        "host-a", {"name": "default", "interval_seconds": 300}
+    )
+    assert result["sent"] is False
+    assert result["reason"] == "normal_suppressed"
+
+
+@pytest.mark.asyncio
 async def test_report_runner_sends_global_daily_report_through_global_callback() -> (
     None
 ):
