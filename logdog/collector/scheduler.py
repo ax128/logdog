@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import inspect
 import logging
 from typing import Any
+
+_CYCLE_TIMEOUT_SECONDS = 60
 
 
 def _default_scheduler_factory():
@@ -104,7 +107,14 @@ class MetricsSamplingScheduler:
 
     async def _run_cycle_job(self) -> None:
         try:
-            await self.run_cycle_once()
+            await asyncio.wait_for(
+                self.run_cycle_once(), timeout=_CYCLE_TIMEOUT_SECONDS
+            )
+        except asyncio.TimeoutError:
+            self._logger.warning(
+                "metrics sampling cycle timed out after %ds",
+                _CYCLE_TIMEOUT_SECONDS,
+            )
         except Exception:  # noqa: BLE001
             self._logger.exception("metrics sampling cycle failed")
 
@@ -156,7 +166,14 @@ class HostMetricsSamplingScheduler:
 
     async def _run_cycle_job(self) -> None:
         try:
-            await self.run_cycle_once()
+            await asyncio.wait_for(
+                self.run_cycle_once(), timeout=_CYCLE_TIMEOUT_SECONDS
+            )
+        except asyncio.TimeoutError:
+            self._logger.warning(
+                "host metrics sampling cycle timed out after %ds",
+                _CYCLE_TIMEOUT_SECONDS,
+            )
         except Exception:  # noqa: BLE001
             self._logger.exception("host metrics sampling cycle failed")
 
