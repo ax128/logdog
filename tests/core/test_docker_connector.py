@@ -167,6 +167,27 @@ async def test_list_containers_and_fetch_stats(monkeypatch: pytest.MonkeyPatch) 
     assert stats["cpu_stats"]["cpu_usage"]["total_usage"] == 1
 
 
+def test_fetch_stats_operation_returns_empty_dict_on_json_decode_error() -> None:
+    """stats() raising JSONDecodeError (empty response from stopped container)
+    should be caught and return an empty dict instead of propagating."""
+    from json import JSONDecodeError
+
+    class _ExplodingContainer:
+        def stats(self, *, stream: bool = False):
+            raise JSONDecodeError("Expecting value", "", 0)
+
+    class _ContainersApi:
+        def get(self, _cid: str):
+            return _ExplodingContainer()
+
+    class _Client:
+        containers = _ContainersApi()
+
+    op = docker_connector._fetch_stats_operation("dead-container")
+    result = op(_Client())
+    assert result == {}
+
+
 @pytest.mark.asyncio
 async def test_connect_docker_host_raises_when_sdk_missing(monkeypatch: pytest.MonkeyPatch) -> None:
     def raise_import(_name: str):

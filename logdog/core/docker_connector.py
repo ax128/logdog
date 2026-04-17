@@ -833,7 +833,12 @@ def _list_containers_operation():
 def _fetch_stats_operation(container_id: str):
     def operation(client: Any) -> dict[str, Any]:
         container_obj = client.containers.get(container_id)
-        stats = container_obj.stats(stream=False)
+        try:
+            stats = container_obj.stats(stream=False)
+        except Exception:
+            # Docker daemon may return an empty or malformed response for
+            # containers that are stopped/exiting.  Treat as "no stats".
+            return {}
         if not isinstance(stats, dict):
             raise TypeError("docker stats payload must be dict")
         return stats
