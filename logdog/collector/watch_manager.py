@@ -18,6 +18,7 @@ class WatchManager:
         self._event_watcher_factory = event_watcher_factory
         self._log_watchers: dict[str, Any] = {}
         self._event_watchers: dict[str, Any] = {}
+        self._degraded_hosts: dict[str, str] = {}
         self._started = False
         self._logger = logging.getLogger(__name__)
 
@@ -29,8 +30,12 @@ class WatchManager:
             host_name = str(status.get("name") or "")
             if host_name == "":
                 continue
-            await self._ensure_host_watchers(host_name)
-            await self.refresh_host(host_name)
+            try:
+                await self._ensure_host_watchers(host_name)
+                await self.refresh_host(host_name)
+            except Exception as exc:
+                self._degraded_hosts[host_name] = str(exc) or type(exc).__name__
+                self._logger.exception("failed to initialize watchers for host %s, skipping", host_name)
 
     async def refresh_host(self, host_name: str) -> None:
         if not self._started:
@@ -135,6 +140,7 @@ class WatchManager:
             return
 
         if host_name in self._log_watchers and host_name in self._event_watchers:
+            self._degraded_hosts.pop(host_name, None)
             return
 
         new_log, new_event = await self._build_started_watchers(host_name)
@@ -142,6 +148,7 @@ class WatchManager:
         old_log = self._log_watchers.get(host_name)
         self._event_watchers[host_name] = new_event
         self._log_watchers[host_name] = new_log
+        self._degraded_hosts.pop(host_name, None)
         if old_event is not None and old_event is not new_event:
             await self._safe_shutdown(old_event)
         if old_log is not None and old_log is not new_log:
@@ -193,6 +200,7 @@ class WatchManager:
             "started": self._started,
             "log_watchers": dict(self._log_watchers),
             "event_watchers": dict(self._event_watchers),
+            "degraded_hosts": dict(self._degraded_hosts),
         }
 
     async def restore_state(self, snapshot: dict[str, Any]) -> None:
@@ -200,7 +208,12 @@ class WatchManager:
             raise ValueError("invalid watch manager snapshot")
         target_log = snapshot.get("log_watchers")
         target_event = snapshot.get("event_watchers")
-        if not isinstance(target_log, dict) or not isinstance(target_event, dict):
+        target_degraded = snapshot.get("degraded_hosts", {})
+        if (
+            not isinstance(target_log, dict)
+            or not isinstance(target_event, dict)
+            or not isinstance(target_degraded, dict)
+        ):
             raise ValueError("invalid watch manager snapshot")
 
         current_pairs = {
@@ -214,4 +227,12 @@ class WatchManager:
 
         self._log_watchers = dict(target_log)
         self._event_watchers = dict(target_event)
+        self._degraded_hosts = {
+            str(host_name): str(reason)
+            for host_name, reason in target_degraded.items()
+            if str(host_name).strip() != ""
+        }
         self._started = bool(snapshot.get("started", self._started))
+
+    def get_degraded_hosts(self) -> dict[str, str]:
+        return dict(self._degraded_hosts)

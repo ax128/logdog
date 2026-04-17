@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import asyncio
+import threading
+import time
+
 import pytest
 
 import logdog.core.docker_connector as docker_connector
@@ -319,6 +323,13 @@ def test_docker_client_kwargs_no_ssh_key_when_not_configured():
     assert "_ssh_key" not in kwargs
 
 
+def test_docker_client_kwargs_uses_host_specific_docker_timeout():
+    kwargs = docker_connector._docker_client_kwargs(
+        {"url": "ssh://deploy@10.0.0.1", "docker_timeout_seconds": 42}
+    )
+    assert kwargs["timeout"] == 42.0
+
+
 def test_make_docker_client_strips_private_kwargs():
     """_make_docker_client must not forward _ssh_key to DockerClient."""
     import unittest.mock as mock
@@ -406,3 +417,107 @@ async def test_docker_client_pool_recreates_client_when_ssh_key_changes() -> Non
     assert len(_PoolFakeDockerClient.created) == 2, "new ssh_key should trigger new client"
     assert _PoolFakeDockerClient.created[0].closed is True
     await pool.close_all()
+
+
+@pytest.mark.asyncio
+async def test_docker_client_pool_uses_host_specific_timeout_for_wait_for(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recorded_timeouts: list[float] = []
+
+    async def record_wait_for(awaitable, timeout):
+        recorded_timeouts.append(float(timeout))
+        return await awaitable
+
+    pool = docker_connector.DockerClientPool(
+        module_loader=lambda: _PoolFakeDockerModule(),
+        to_thread=_run_sync,
+    )
+    host = {
+        "name": "prod",
+        "url": "ssh://deploy@10.0.1.10",
+        "docker_timeout_seconds": 0.2,
+    }
+
+    monkeypatch.setattr(docker_connector, "_DEFAULT_SSH_TIMEOUT", 0.01)
+    monkeypatch.setattr(docker_connector.asyncio, "wait_for", record_wait_for)
+
+    containers = await pool.list_containers_for_host(host)
+
+    assert containers == [
+        {
+            "id": "c1",
+            "name": "svc-1",
+            "status": "running",
+            "restart_count": 3,
+        }
+    ]
+    assert recorded_timeouts == [0.2, 0.2]
+
+    await pool.close_all()
+
+
+@pytest.mark.asyncio
+async def test_docker_client_pool_discards_client_after_operation_timeout() -> None:
+    _PoolFakeDockerClient.created = []
+    pool = docker_connector.DockerClientPool(
+        module_loader=lambda: _PoolFakeDockerModule(),
+    )
+    host = {
+        "name": "prod",
+        "url": "unix:///var/run/docker.sock",
+        "docker_timeout_seconds": 0.05,
+    }
+
+    first_client = await pool._get_client(host)
+    assert len(_PoolFakeDockerClient.created) == 1
+
+    with pytest.raises(asyncio.TimeoutError):
+        await pool._run(host, lambda _client: time.sleep(0.2))
+
+    replacement_client = await pool._get_client(host)
+
+    assert replacement_client is not first_client
+    assert first_client.closed is True
+    assert len(_PoolFakeDockerClient.created) == 2
+
+    await pool.close_all()
+
+
+def test_run_in_daemon_thread_does_not_raise_when_loop_already_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    thread_errors: list[BaseException] = []
+
+    def _capture_thread_error(args: threading.ExceptHookArgs) -> None:
+        thread_errors.append(args.exc_value)
+
+    monkeypatch.setattr(threading, "excepthook", _capture_thread_error)
+
+    async def _exercise_timeout() -> None:
+        _PoolFakeDockerClient.created = []
+        pool = docker_connector.DockerClientPool(
+            module_loader=lambda: _PoolFakeDockerModule(),
+        )
+        host = {
+            "name": "prod",
+            "url": "unix:///var/run/docker.sock",
+            "docker_timeout_seconds": 0.01,
+        }
+
+        await pool._get_client(host)
+        with pytest.raises(asyncio.TimeoutError):
+            await pool._run(host, lambda _client: time.sleep(0.05))
+        await pool.close_all()
+
+    loop = asyncio.new_event_loop()
+    try:
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(_exercise_timeout())
+    finally:
+        loop.close()
+        asyncio.set_event_loop(None)
+
+    time.sleep(0.1)
+
+    assert thread_errors == []

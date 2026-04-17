@@ -343,6 +343,7 @@ hosts:
   # - name: prod
   #   url: ssh://root@10.0.1.1:22
   #   ssh_key: /root/.ssh/id_ed25519
+  #   docker_timeout_seconds: 30       # 远端 Docker 响应慢时可按主机调大
   #   prompt_template: default_alert     # 该服务器的默认提示词
   #   output_template: ops_friendly      # 该服务器的默认输出格式
   #   notify:

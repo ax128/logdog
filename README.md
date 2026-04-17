@@ -84,6 +84,7 @@ hosts:
   - name: prod
     url: "ssh://${PROD_USER:-root}@${PROD_HOST}:${PROD_PORT:-22}"
     ssh_key: "${PROD_SSH_KEY:-/root/.ssh/id_ed25519}"
+    docker_timeout_seconds: 30
 ```
 
 在 `.env` 中填入：
@@ -96,6 +97,7 @@ PROD_SSH_KEY=/root/.ssh/id_ed25519
 ```
 
 目标机需要 Docker 访问权限（root 或 docker 组），SSH 私钥需免密可用。
+如果远端 Docker 守护进程较慢、容器较多，建议按主机单独提高 `docker_timeout_seconds`（默认 30 秒）。
 
 ## 通知配置
 

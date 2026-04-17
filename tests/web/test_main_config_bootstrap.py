@@ -223,6 +223,40 @@ def test_create_app_explicit_hosts_seam_ignores_invalid_implicit_config(
     }
 
 
+def test_build_telegram_runtime_prefers_explicit_authorized_users_over_persisted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _FakeRuntime:
+        def __init__(self, authorized_user_ids: set[str]) -> None:
+            self._authorized_user_ids = set(authorized_user_ids)
+
+        def set_authorized_user_persist_callback(self, _callback) -> None:
+            return None
+
+        def set_sender(self, _sender) -> None:
+            return None
+
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "telegram-token")
+    monkeypatch.setattr(
+        main_module,
+        "_load_persisted_authorized_users",
+        lambda: {"persisted-user"},
+    )
+
+    def build_runtime(**kwargs):
+        return _FakeRuntime(set(kwargs["authorized_user_ids"]))
+
+    monkeypatch.setattr(main_module, "build_telegram_bot_runtime", build_runtime)
+
+    runtime = main_module._build_telegram_runtime_from_config(
+        app_config={"agent": {"authorized_users": {"telegram": ["cfg-user"]}}},
+        chat_runtime=None,
+    )
+
+    assert runtime is not None
+    assert runtime._authorized_user_ids == {"cfg-user"}
+
+
 @pytest.mark.asyncio
 async def test_main_app_default_reload_action_reloads_hosts_from_config_file(
     tmp_path: Path,
@@ -456,6 +490,143 @@ async def test_main_app_reload_rebuilds_telegram_runtime_when_lifespan_running(
         assert runtime._authorized_user_ids == {"2"}
 
     assert "app2:app:shutdown" in events
+
+
+@pytest.mark.asyncio
+async def test_main_app_reload_rebinds_telegram_chat_id_sync_to_new_router(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _FakeSendFunc:
+        def __init__(self, label: str) -> None:
+            self.label = label
+            self.pin_calls: list[str] = []
+
+        def __call__(self, _target: str, _message: str, parse_mode: str = "") -> None:
+            _ = parse_mode
+
+        def pin_chat_id(self, chat_id: str) -> None:
+            self.pin_calls.append(chat_id)
+
+    class _FakeNotifier:
+        def __init__(self, send_func: _FakeSendFunc) -> None:
+            self._send_func = send_func
+
+    class _FakeRouter:
+        def __init__(self, label: str) -> None:
+            self.label = label
+            self.send_func = _FakeSendFunc(label)
+            self._notifiers = [_FakeNotifier(self.send_func)]
+            self._host_notifiers: dict[str, list[_FakeNotifier]] = {}
+
+        async def send(
+            self,
+            _host: str,
+            _message: str,
+            _category: str,
+            context: dict | None = None,
+        ) -> bool:
+            _ = context
+            return True
+
+    class _FakeRuntime:
+        def __init__(self, label: str) -> None:
+            self.label = label
+            self.callback = None
+
+        def set_chat_id_seen_callback(self, callback) -> None:
+            self.callback = callback
+
+        async def start(self) -> None:
+            return None
+
+        async def shutdown(self) -> None:
+            return None
+
+    def _chat_id_from_config(app_config: dict | None) -> str:
+        notify_cfg = (app_config or {}).get("notify") or {}
+        telegram_cfg = notify_cfg.get("telegram") or {}
+        chat_ids = telegram_cfg.get("chat_ids") or []
+        return str(chat_ids[0]) if chat_ids else "missing"
+
+    routers: list[_FakeRouter] = []
+
+    def build_router(*, app_config=None, **_kwargs):
+        router = _FakeRouter(_chat_id_from_config(app_config))
+        routers.append(router)
+        return router
+
+    def build_runtime(*, app_config=None, **_kwargs):
+        return _FakeRuntime(_chat_id_from_config(app_config))
+
+    config_path = _write_yaml(
+        tmp_path / "logdog.yaml",
+        """
+        hosts:
+          - name: local
+            url: unix:///var/run/docker.sock
+        notify:
+          telegram:
+            enabled: true
+            chat_ids: ["old-target"]
+        agent:
+          authorized_users:
+            telegram: ["1"]
+        """,
+    )
+
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "telegram-token")
+    monkeypatch.setattr(main_module, "_load_persisted_authorized_users", lambda: set())
+    monkeypatch.setattr(main_module, "_load_cached_chat_id", lambda _token: None)
+    monkeypatch.setattr(main_module, "_persist_chat_id", lambda *_args: None)
+    monkeypatch.setattr(main_module, "_resolve_notify_router", build_router)
+    monkeypatch.setattr(
+        main_module,
+        "_build_telegram_runtime_from_config",
+        build_runtime,
+    )
+    monkeypatch.setattr(main_module, "build_chat_runtime", lambda **_kwargs: object())
+    monkeypatch.setattr(main_module, "create_tool_registry", lambda **_kwargs: {})
+
+    app = main_module.create_app(
+        config_path=str(config_path),
+        web_auth_token="web-token",
+        web_admin_token="admin-token",
+        enable_metrics_scheduler=False,
+        enable_retention_cleanup=False,
+        enable_watch_manager=False,
+    )
+
+    old_router = app.state.notify_router
+
+    _write_yaml(
+        config_path,
+        """
+        hosts:
+          - name: local
+            url: unix:///var/run/docker.sock
+        notify:
+          telegram:
+            enabled: true
+            chat_ids: ["new-target"]
+        agent:
+          authorized_users:
+            telegram: ["1"]
+        """,
+    )
+
+    summary = await app.state.reload_action()
+    assert summary["ok"] is True
+
+    new_router = app.state.notify_router
+    runtime = app.state.telegram_runtime
+    assert runtime is not None
+    assert runtime.callback is not None
+
+    runtime.callback("chat-123")
+
+    assert old_router.send_func.pin_calls == []
+    assert new_router.send_func.pin_calls == ["chat-123"]
 
 
 @pytest.mark.asyncio

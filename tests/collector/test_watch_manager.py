@@ -147,6 +147,42 @@ async def test_watch_manager_reacts_to_host_status_transitions() -> None:
 
 
 @pytest.mark.asyncio
+async def test_watch_manager_records_and_clears_degraded_hosts_on_recovery() -> None:
+    host_manager = _HostManagerStub()
+    event_build_count = {"n": 0}
+
+    def build_log_watcher(host: dict) -> _LogDogerStub:
+        return _LogDogerStub(host)
+
+    def build_event_watcher(host: dict) -> _FailingEventWatcherStub:
+        event_build_count["n"] += 1
+        return _FailingEventWatcherStub(
+            host,
+            fail_on_start=event_build_count["n"] == 1,
+        )
+
+    manager = WatchManager(
+        host_manager=host_manager,
+        log_watcher_factory=build_log_watcher,
+        event_watcher_factory=build_event_watcher,
+    )
+
+    await manager.start()
+
+    assert manager.get_degraded_hosts() == {"host-a": "event watcher start failed"}
+    assert manager._log_watchers == {}
+    assert manager._event_watchers == {}
+
+    await manager.refresh_host("host-a")
+
+    assert manager.get_degraded_hosts() == {}
+    assert "host-a" in manager._log_watchers
+    assert "host-a" in manager._event_watchers
+
+    await manager.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_watch_manager_reload_keeps_old_watchers_when_candidate_start_fails() -> (
     None
 ):

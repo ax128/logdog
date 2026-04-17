@@ -30,13 +30,22 @@ async def _run_in_daemon_thread(fn: Any) -> Any:
         if not future.done():
             future.set_exception(exc)
 
+    def _deliver(callback: Any, value: Any) -> None:
+        try:
+            loop.call_soon_threadsafe(callback, value)
+        except RuntimeError:
+            # Timeout/cancellation may outlive the loop; a late thread result
+            # should be dropped rather than surfacing as an unhandled thread
+            # exception during shutdown.
+            return
+
     def _worker() -> None:
         try:
             result = fn()
         except Exception as exc:  # noqa: BLE001
-            loop.call_soon_threadsafe(_set_error, exc)
+            _deliver(_set_error, exc)
             return
-        loop.call_soon_threadsafe(_set_result, result)
+        _deliver(_set_result, result)
 
     thread = threading.Thread(
         target=_worker,
@@ -376,11 +385,16 @@ class DockerClientPool:
             await self._close_client(entry.client)
 
     async def _run(self, host: dict[str, Any], operation: Any) -> Any:
+        timeout_seconds = _docker_timeout_seconds(host)
         client = await self._get_client(host)
-        return await asyncio.wait_for(
-            self._to_thread(lambda: operation(client)),
-            timeout=_DEFAULT_SSH_TIMEOUT,
-        )
+        try:
+            return await asyncio.wait_for(
+                self._to_thread(lambda: operation(client)),
+                timeout=timeout_seconds,
+            )
+        except asyncio.TimeoutError:
+            await self._discard_client(host, client)
+            raise
 
     async def _open_stream(self, host: dict[str, Any], operation: Any) -> _StreamHandle:
         stream = await _open_stream_handle(
@@ -398,13 +412,34 @@ class DockerClientPool:
         async with self._lock:
             self._active_streams.pop(id(stream), None)
 
+    async def _discard_client(self, host: dict[str, Any], client: Any) -> None:
+        key = _client_key(host)
+        stale_client: Any | None = None
+        async with self._lock:
+            entry = self._clients.get(key)
+            if entry is not None and entry.client is client:
+                stale_client = entry.client
+                self._clients.pop(key, None)
+        if stale_client is None:
+            return
+        try:
+            await asyncio.wait_for(self._close_client(stale_client), timeout=1.0)
+        except Exception:
+            return
+
     async def _get_client(self, host: dict[str, Any]) -> Any:
         key = _client_key(host)
         kwargs = _docker_client_kwargs(host)
+        timeout_seconds = _docker_timeout_seconds(host)
         now = self._now()
 
         async with self._lock:
-            entry = await self._get_or_create_client_locked(key, kwargs, now)
+            entry = await self._get_or_create_client_locked(
+                key,
+                kwargs,
+                now,
+                timeout_seconds=timeout_seconds,
+            )
             entry.last_used_at = now
             return entry.client
 
@@ -413,11 +448,15 @@ class DockerClientPool:
         key: str,
         kwargs: dict[str, Any],
         now: float,
+        *,
+        timeout_seconds: float,
     ) -> _PooledClient:
         await self._evict_idle_locked(now)
         entry = self._clients.get(key)
         if entry is not None and entry.kwargs == kwargs:
-            if await self._is_client_healthy(entry.client):
+            if await self._is_client_healthy(
+                entry.client, timeout_seconds=timeout_seconds
+            ):
                 return entry
             await self._close_client(entry.client)
             self._clients.pop(key, None)
@@ -432,7 +471,7 @@ class DockerClientPool:
         docker_module = self._module_loader()
         client = await asyncio.wait_for(
             self._to_thread(lambda: _make_docker_client(docker_module, kwargs)),
-            timeout=_DEFAULT_SSH_TIMEOUT,
+            timeout=timeout_seconds,
         )
         entry = _PooledClient(kwargs=kwargs, client=client, last_used_at=now)
         self._clients[key] = entry
@@ -443,7 +482,9 @@ class DockerClientPool:
         if callable(close_fn):
             await self._to_thread(close_fn)
 
-    async def _is_client_healthy(self, client: Any) -> bool:
+    async def _is_client_healthy(
+        self, client: Any, *, timeout_seconds: float
+    ) -> bool:
         def check() -> bool:
             ping_fn = getattr(client, "ping", None)
             if callable(ping_fn):
@@ -458,7 +499,12 @@ class DockerClientPool:
             return True
 
         try:
-            return bool(await self._to_thread(check))
+            return bool(
+                await asyncio.wait_for(
+                    self._to_thread(check),
+                    timeout=timeout_seconds,
+                )
+            )
         except Exception:  # noqa: BLE001
             return False
 
@@ -592,6 +638,7 @@ async def exec_container_for_host(
 async def _run_with_client(host: dict[str, Any], operation) -> Any:
     docker_module = _load_docker_module()
     kwargs = _docker_client_kwargs(host)
+    timeout_seconds = _docker_timeout_seconds(host)
 
     def task() -> Any:
         client = _make_docker_client(docker_module, kwargs)
@@ -602,7 +649,7 @@ async def _run_with_client(host: dict[str, Any], operation) -> Any:
             if callable(close_fn):
                 close_fn()
 
-    return await _TO_THREAD(task)
+    return await asyncio.wait_for(_TO_THREAD(task), timeout=timeout_seconds)
 
 
 async def _open_stream_handle(
@@ -615,7 +662,11 @@ async def _open_stream_handle(
 ) -> _StreamHandle:
     docker_module = module_loader()
     kwargs = _docker_client_kwargs(host)
-    client = await to_thread(lambda: _make_docker_client(docker_module, kwargs))
+    timeout_seconds = _docker_timeout_seconds(host)
+    client = await asyncio.wait_for(
+        to_thread(lambda: _make_docker_client(docker_module, kwargs)),
+        timeout=timeout_seconds,
+    )
     return _StreamHandle(
         client=client,
         operation=operation,
@@ -632,7 +683,25 @@ def _load_docker_module() -> Any:
         raise RuntimeError("docker SDK is not available") from exc
 
 
-_DEFAULT_SSH_TIMEOUT = 15  # seconds
+_DEFAULT_SSH_TIMEOUT = 30.0  # seconds
+
+
+def _docker_timeout_seconds(host: dict[str, Any]) -> float:
+    raw_timeout = host.get("docker_timeout_seconds")
+    if raw_timeout is None or str(raw_timeout).strip() == "":
+        return float(_DEFAULT_SSH_TIMEOUT)
+
+    host_name = str(host.get("name") or "").strip() or "unknown"
+    try:
+        timeout_seconds = float(raw_timeout)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"host[{host_name}].docker_timeout_seconds must be > 0"
+        ) from exc
+
+    if timeout_seconds <= 0:
+        raise ValueError(f"host[{host_name}].docker_timeout_seconds must be > 0")
+    return timeout_seconds
 
 
 def _docker_client_kwargs(host: dict[str, Any]) -> dict[str, Any]:
@@ -642,7 +711,7 @@ def _docker_client_kwargs(host: dict[str, Any]) -> dict[str, Any]:
     kwargs: dict[str, Any] = {"base_url": url}
     if url.startswith("ssh://"):
         kwargs["use_ssh_client"] = True
-        kwargs["timeout"] = _DEFAULT_SSH_TIMEOUT
+        kwargs["timeout"] = _docker_timeout_seconds(host)
         ssh_key = str(host.get("ssh_key") or "").strip()
         if ssh_key:
             # Private key: not forwarded to DockerClient directly; used by

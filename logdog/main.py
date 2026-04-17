@@ -1034,7 +1034,7 @@ def create_app(
             )
             _wire_telegram_chat_id_sync(
                 candidate_telegram_runtime,
-                resolved_notify_router,
+                candidate_notify_router,
                 bot_token=_resolve_telegram_bot_token(new_app_config),
             )
 
@@ -2591,21 +2591,26 @@ def _resolve_telegram_bot_token(app_config: dict[str, Any] | None = None) -> str
 
 def _resolve_authorized_telegram_users(
     app_config: dict[str, Any] | None,
-) -> set[str]:
+) -> tuple[set[str], bool]:
     if not isinstance(app_config, dict):
-        return set()
+        return set(), False
     agent_cfg = app_config.get("agent")
     if not isinstance(agent_cfg, dict):
-        return set()
+        return set(), False
     authorized_users = agent_cfg.get("authorized_users")
     if not isinstance(authorized_users, dict):
-        return set()
+        return set(), False
+    if "telegram" not in authorized_users:
+        return set(), False
     telegram_users = authorized_users.get("telegram")
     if telegram_users is None:
-        return set()
+        return set(), True
     if not isinstance(telegram_users, (list, tuple, set, frozenset)):
         raise TypeError("app_config.agent.authorized_users.telegram must be a list")
-    return {str(item).strip() for item in telegram_users if str(item).strip() != ""}
+    return (
+        {str(item).strip() for item in telegram_users if str(item).strip() != ""},
+        True,
+    )
 
 
 _AUTHORIZED_USERS_STATE_FILE = "data/logdog_authorized.json"
@@ -2812,9 +2817,13 @@ def _build_telegram_runtime_from_config(
     telegram_application_factory: Any | None = None,
     telegram_handler_binder: Any | None = None,
 ):
-    authorized_telegram_users = _resolve_authorized_telegram_users(app_config)
-    # Merge with persisted state from previous runs
-    authorized_telegram_users |= _load_persisted_authorized_users()
+    authorized_telegram_users, has_explicit_telegram_users = (
+        _resolve_authorized_telegram_users(app_config)
+    )
+    # Only fall back to persisted state when the config does not explicitly
+    # declare the Telegram allowlist.
+    if not has_explicit_telegram_users:
+        authorized_telegram_users |= _load_persisted_authorized_users()
     telegram_bot_token = _resolve_telegram_bot_token(app_config)
     if telegram_bot_token and not authorized_telegram_users:
         logger.info(
