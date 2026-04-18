@@ -282,8 +282,13 @@ llm:
 agent:
   authorized_users:
     telegram: []
-    # 填入你的 Telegram User ID，允许通过 Bot 交互
-    # 获取方式: 给 @userinfobot 发消息，拿到你的 id
+    # 留空表示不预置静态用户，已持久化的已配对用户仍会在重启后加载
+    telegram_pairing_code: "请替换为高强度随机口令"
+    # 首次使用: 给 Bot 发送 /auth <口令>，或 /auth@BotName <口令>（BotName 必须是当前 Bot 用户名）
+    # 只接受精确 /auth 命令，/authz 或 /auth@OtherBot 这类近似/错目标命令会被拒绝
+    # 连续输错 5 次后，该 Telegram 用户会被临时锁定 60 秒
+    # 首个成功者会被持久化授权
+    # 生产环境建议改成高强度随机口令，完成配对后再写死 telegram 用户 ID
     # telegram: ["123456789"]
 
 

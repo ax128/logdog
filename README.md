@@ -9,7 +9,7 @@
 - **指标采样**：容器与宿主机指标定时采集，持久化至 SQLite，带保留期自动清理
 - **定时巡检**：周期性全局状态汇总报告
 - **AI 对话**：内置 LLM Agent，支持自然语言查询状态、分析日志、重启容器（需配置 LLM）
-- **Telegram Bot**：双向交互，支持流式回复、`/status`、`/help`、`/msg` 切换消息格式
+- **Telegram Bot**：双向交互，支持流式回复、`/auth` 首次配对、`/status`、`/help`、`/msg` 切换消息格式
 - **热重载**：`POST /api/reload` 无停机更新配置，失败自动回滚
 - **Web 控制台**：内置前端，API + WebSocket 实时 Chat
 
@@ -110,14 +110,20 @@ notify:
     chat_ids: []         # 留空 + auto_chat_id: true 时自动解析
     auto_chat_id: true
     message_mode: text   # text | md | doc
+
+agent:
+  authorized_users:
+    telegram: []             # 不预置静态用户，已持久化的已配对用户仍会在重启后加载
+    telegram_pairing_code: "请替换为高强度随机口令"
 ```
 
-启动后先给 Bot 发一条消息，它会自动记住你的 chat_id。
+首次使用时，先给 Bot 发送 `/auth <口令>`，或在需要带后缀时发送 `/auth@BotName <口令>`（其中 `BotName` 必须是当前 Bot 的用户名）。只接受这两种精确写法，`/authz` 或 `/auth@OtherBot` 这类近似/错目标命令会被拒绝。连续输错 5 次后，该 Telegram 用户会被临时锁定 60 秒。首个校验成功的 Telegram 用户会被持久化授权，后续重启仍然有效。`authorized_users.telegram: []` 仍表示不预置静态用户，不影响已持久化配对用户的加载。成功配对后，Bot 会自动记住最近对话的 chat_id。
 
 Bot 支持的命令：
 
 | 命令 | 说明 |
 |------|------|
+| `/auth <口令>` 或 `/auth@BotName <口令>`（`BotName` 必须是当前 Bot 用户名） | 首次配对当前 Telegram 账号 |
 | `/status` | 查看 Agent 状态 |
 | `/help` | 显示所有命令 |
 | `/msg md` | 切换消息格式（txt / md / doc） |
@@ -168,11 +174,11 @@ llm:
       api_key: "${OPENAI_API_KEY}"
       model: gpt-4o
   permissions:
-    dangerous_tools: [restart_container]
-    dangerous_host_allowlist: [prod]
+    dangerous_tools: []
+    dangerous_host_allowlist: []
 ```
 
-Agent 具备的能力：查询容器状态、读取日志、重启容器（需明确确认）、查看告警历史等。
+Agent 具备的能力：查询容器状态、读取日志、查看告警历史等。若需恢复容器重启或容器内执行能力，再按需显式开启高危工具权限。
 
 ## 环境变量
 
@@ -232,10 +238,12 @@ pytest -q
 
 ## 安全说明
 
+- `docker-compose.yaml` 默认只绑定 `127.0.0.1:11680`
 - 生产环境请通过反向代理（Nginx/Caddy）提供 TLS，并限制 `/api/reload` 的来源 IP
 - 不要使用 `allow_insecure_default_tokens=True`
 - SSH 私钥权限建议设为 `600`
-- Telegram Bot 的 `authorized_users` 列表务必配置，防止未授权用户控制 Agent
+- 不要把示例配对口令直接用于生产；请改成高强度随机值
+- 若已知固定操作人，优先直接配置 `authorized_users.telegram`
 
 ## License
 

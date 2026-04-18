@@ -4,7 +4,7 @@ services:
     container_name: logdog
     restart: unless-stopped
     ports:
-      - "11680:8000"
+      - "127.0.0.1:11680:8000"
     volumes:
       - ./config:/app/config:ro
       - ./data:/app/data
