@@ -726,7 +726,7 @@ async def test_close_resources_closes_ssh_transport_when_main_close_raises() -> 
 
     await handle.aclose()
 
-    assert len(ssh_close_calls) >= 1
+    assert len(ssh_close_calls) == 1
 
 
 @pytest.mark.asyncio
