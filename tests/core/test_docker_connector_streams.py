@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import threading
 from datetime import datetime, timezone
 from typing import Any, cast
@@ -644,3 +645,45 @@ async def test_core_primitives_reject_non_positive_bounds(
             await cast(Any, method)(_host(), {"id": "c1"}, **kwargs).__anext__()
         else:
             await method(_host(), {"id": "c1"}, **kwargs)
+
+
+@pytest.mark.asyncio
+async def test_open_stream_handle_timeout_closes_leaked_client() -> None:
+    """When _open_stream_handle times out during client creation, the
+    client created by the background thread must be closed."""
+    leaked: list[Any] = []
+
+    class _SlowClient:
+        def __init__(self, **_kwargs):
+            import time
+            time.sleep(0.15)
+            self.closed = False
+            leaked.append(self)
+
+        def close(self):
+            self.closed = True
+
+        def version(self):
+            return {"Version": "1.0", "ApiVersion": "1.0"}
+
+    class _SlowModule:
+        DockerClient = _SlowClient
+
+    host = {
+        "name": "slow-host",
+        "url": "unix:///var/run/docker.sock",
+        "docker_timeout_seconds": 0.01,
+    }
+
+    with pytest.raises(asyncio.TimeoutError):
+        await docker_connector._open_stream_handle(
+            host,
+            lambda _client: iter([]),
+            module_loader=lambda: _SlowModule(),
+            to_thread=docker_connector._run_in_daemon_thread,
+        )
+
+    await asyncio.sleep(0.3)
+
+    assert len(leaked) == 1
+    assert leaked[0].closed is True

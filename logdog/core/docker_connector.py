@@ -693,10 +693,38 @@ async def _open_stream_handle(
     docker_module = module_loader()
     kwargs = _docker_client_kwargs(host)
     timeout_seconds = _docker_timeout_seconds(host)
-    client = await asyncio.wait_for(
-        to_thread(lambda: _make_docker_client(docker_module, kwargs)),
-        timeout=timeout_seconds,
-    )
+    created: list[Any] = []
+    thread_done = threading.Event()
+
+    def _create() -> Any:
+        try:
+            c = _make_docker_client(docker_module, kwargs)
+            created.append(c)
+            return c
+        finally:
+            thread_done.set()
+
+    try:
+        client = await asyncio.wait_for(
+            to_thread(_create),
+            timeout=timeout_seconds,
+        )
+    except asyncio.TimeoutError:
+        async def _cleanup_leaked() -> None:
+            await asyncio.get_running_loop().run_in_executor(
+                None, lambda: thread_done.wait(timeout=max(timeout_seconds * 10, 60.0)),
+            )
+            for c in created:
+                try:
+                    close_fn = getattr(c, "close", None)
+                    if callable(close_fn):
+                        close_fn()
+                except Exception:  # noqa: BLE001
+                    pass
+                _force_close_ssh_transport(c)
+
+        asyncio.get_running_loop().create_task(_cleanup_leaked())
+        raise
     return _StreamHandle(
         client=client,
         operation=operation,
