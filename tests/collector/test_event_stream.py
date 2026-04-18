@@ -236,3 +236,99 @@ async def test_event_stream_watcher_reconnects_after_stream_eof() -> None:
         await watcher.shutdown()
 
     assert attempts["n"] >= 2
+
+
+@pytest.mark.asyncio
+async def test_event_stream_backoff_increases_on_repeated_crashes() -> None:
+    """After repeated crashes, backoff delay should increase exponentially."""
+    sleep_durations: list[float] = []
+
+    async def stream_events(_host: dict, **_kwargs):
+        raise ConnectionError("Too many open files")
+        if False:
+            yield {}
+
+    async def fake_sleep(seconds: float) -> None:
+        sleep_durations.append(seconds)
+        if len(sleep_durations) >= 3:
+            raise asyncio.CancelledError
+
+    watcher = EventStreamWatcher(
+        host={"name": "host-a", "url": "unix:///var/run/docker.sock"},
+        stream_events=stream_events,
+        run_alert=lambda *_args, **_kwargs: None,
+        reconnect_backoff_seconds=1.0,
+    )
+
+    import unittest.mock
+    _real_sleep = asyncio.sleep
+    with (
+        unittest.mock.patch("logdog.collector.event_stream.asyncio.sleep", side_effect=fake_sleep),
+        unittest.mock.patch("logdog.collector.event_stream.random.random", return_value=0.5),
+    ):
+        await watcher.start()
+        try:
+            await _real_sleep(1.0)
+        except asyncio.CancelledError:
+            pass
+        finally:
+            await watcher.shutdown()
+
+    assert len(sleep_durations) >= 2
+    for i in range(1, len(sleep_durations)):
+        assert sleep_durations[i] > sleep_durations[i - 1], (
+            f"backoff did not increase: {sleep_durations}"
+        )
+
+
+@pytest.mark.asyncio
+async def test_event_stream_backoff_resets_after_successful_stream() -> None:
+    """After a successful stream (normal EOF), backoff should reset."""
+    sleep_durations: list[float] = []
+    attempt = {"n": 0}
+
+    async def stream_events(_host: dict, **_kwargs):
+        attempt["n"] += 1
+        if attempt["n"] == 1:
+            raise ConnectionError("crash")
+        if attempt["n"] == 2:
+            raise ConnectionError("crash again")
+        if attempt["n"] == 3:
+            yield {"time": "2026-04-18T10:00:00Z", "action": "start",
+                   "container_id": "c1", "container_name": "svc"}
+            return  # normal EOF
+        if attempt["n"] == 4:
+            raise ConnectionError("crash after recovery")
+        raise asyncio.CancelledError
+        if False:
+            yield {}
+
+    async def fake_sleep(seconds: float) -> None:
+        sleep_durations.append(seconds)
+
+    watcher = EventStreamWatcher(
+        host={"name": "host-a", "url": "unix:///var/run/docker.sock"},
+        stream_events=stream_events,
+        run_alert=lambda *_args, **_kwargs: None,
+        reconnect_backoff_seconds=1.0,
+    )
+
+    import unittest.mock
+    _real_sleep = asyncio.sleep
+    with (
+        unittest.mock.patch("logdog.collector.event_stream.asyncio.sleep", side_effect=fake_sleep),
+        unittest.mock.patch("logdog.collector.event_stream.random.random", return_value=0.0),
+    ):
+        await watcher.start()
+        try:
+            await asyncio.wait_for(_real_sleep(2.0), timeout=2.0)
+        except (asyncio.CancelledError, asyncio.TimeoutError):
+            pass
+        finally:
+            await watcher.shutdown()
+
+    # After recovery (attempt 3, normal EOF), backoff resets
+    assert len(sleep_durations) >= 4
+    assert sleep_durations[2] < sleep_durations[1], (
+        f"backoff should reset after EOF: {sleep_durations}"
+    )

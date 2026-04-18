@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+import random
 from typing import Any
 
 from logdog.pipeline.cooldown import CooldownStore
@@ -79,6 +80,7 @@ class EventStreamWatcher:
         managed_mode = (
             self._task is not None and asyncio.current_task() is self._task
         )
+        _backoff_attempt = 0
         while True:
             try:
                 async for event in self._stream_events(
@@ -131,24 +133,23 @@ class EventStreamWatcher:
                             "event stream handler failed host=%s",
                             host_name,
                         )
-                if not managed_mode:
-                    return
-                delay = min(
-                    max(self._reconnect_backoff_seconds, 0.0),
-                    _MAX_RECONNECT_BACKOFF_SECONDS,
-                )
-                if delay > 0:
-                    await asyncio.sleep(delay)
             except asyncio.CancelledError:
                 raise
             except Exception:  # noqa: BLE001
                 logger.exception("event stream watcher crashed host=%s", host_name)
+                _backoff_attempt = min(_backoff_attempt + 1, 4)
+            else:
+                if not managed_mode:
+                    return
+                _backoff_attempt = 0
+            if managed_mode:
                 delay = min(
-                    max(self._reconnect_backoff_seconds, 0.0),
+                    self._reconnect_backoff_seconds * (2 ** _backoff_attempt),
                     _MAX_RECONNECT_BACKOFF_SECONDS,
                 )
                 if delay > 0:
-                    await asyncio.sleep(delay)
+                    jitter = delay * 0.3 * random.random()
+                    await asyncio.sleep(delay + jitter)
 
 
 async def _maybe_await(value: Any) -> Any:
