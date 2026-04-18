@@ -4,6 +4,7 @@ import time
 import logging
 import asyncio
 import inspect
+import random
 import threading
 from copy import deepcopy
 from fnmatch import fnmatch
@@ -760,6 +761,7 @@ class LogStreamWatcher:
         # Determine initial lookback window
         lookback = self._watch_lookback_seconds
         last_log_ts: float | None = None
+        _backoff_attempt = 0
 
         while True:
             try:
@@ -830,11 +832,19 @@ class LogStreamWatcher:
                     host_name,
                     container_name,
                 )
+                _backoff_attempt = min(_backoff_attempt + 1, 4)
+            else:
+                _backoff_attempt = 0
             await self._queue.join()
             if not managed_mode:
                 return
             if self._reconnect_backoff_seconds > 0:
-                await asyncio.sleep(self._reconnect_backoff_seconds)
+                delay = min(
+                    self._reconnect_backoff_seconds * (2 ** _backoff_attempt),
+                    _MAX_RECONNECT_BACKOFF_SECONDS,
+                )
+                jitter = delay * 0.3 * random.random()
+                await asyncio.sleep(delay + jitter)
 
     def _apply_preprocessors(self, line: LogLine) -> list[LogLine]:
         current = [line]
