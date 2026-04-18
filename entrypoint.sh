@@ -79,4 +79,10 @@ BLOCK
 } > /root/.ssh/config
 chmod 600 /root/.ssh/config
 
+# Warn if fd limit is too low for SSH-based Docker hosts
+_fd_soft=$(ulimit -Sn 2>/dev/null || echo 0)
+if [ "$_fd_soft" -lt 65536 ] 2>/dev/null; then
+    echo "WARNING: soft fd limit is $_fd_soft (recommended: 65536+). Run with --ulimit nofile=65536:65536" >&2
+fi
+
 exec "$@"
