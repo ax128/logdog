@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
+from typing import Any
 
 import pytest
 
@@ -542,3 +543,39 @@ def test_run_in_daemon_thread_does_not_raise_when_loop_already_closed(
     time.sleep(0.1)
 
     assert thread_errors == []
+
+
+@pytest.mark.asyncio
+async def test_pool_client_creation_timeout_closes_leaked_client() -> None:
+    """When _get_or_create_client_locked times out during _make_docker_client,
+    the client created in the background thread must still be closed."""
+    leaked: list[Any] = []
+
+    class _SlowDockerClient(_FakeDockerClient):
+        def __init__(self, **kwargs):
+            import time
+            time.sleep(0.15)
+            super().__init__(**kwargs)
+            leaked.append(self)
+
+    class _SlowModule:
+        DockerClient = _SlowDockerClient
+
+    pool = docker_connector.DockerClientPool(
+        module_loader=lambda: _SlowModule(),
+    )
+    host = {
+        "name": "slow-host",
+        "url": "unix:///var/run/docker.sock",
+        "docker_timeout_seconds": 0.01,
+    }
+
+    with pytest.raises(asyncio.TimeoutError):
+        await pool._get_client(host)
+
+    # Give the background thread time to finish
+    await asyncio.sleep(0.3)
+
+    assert len(leaked) == 1, "thread should have created exactly one client"
+    assert leaked[0].closed is True, "leaked client must be closed after timeout"
+    await pool.close_all()

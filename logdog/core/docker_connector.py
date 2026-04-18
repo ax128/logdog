@@ -469,10 +469,40 @@ class DockerClientPool:
         await self._enforce_capacity_locked()
 
         docker_module = self._module_loader()
-        client = await asyncio.wait_for(
-            self._to_thread(lambda: _make_docker_client(docker_module, kwargs)),
-            timeout=timeout_seconds,
-        )
+        created: list[Any] = []
+        thread_done = threading.Event()
+
+        def _create() -> Any:
+            try:
+                c = _make_docker_client(docker_module, kwargs)
+                created.append(c)
+                return c
+            finally:
+                thread_done.set()
+
+        try:
+            client = await asyncio.wait_for(
+                self._to_thread(_create),
+                timeout=timeout_seconds,
+            )
+        except asyncio.TimeoutError:
+            async def _cleanup_leaked() -> None:
+                # Wait for the background thread to finish so `created` is
+                # populated, then close the leaked client.
+                await asyncio.get_running_loop().run_in_executor(
+                    None, thread_done.wait,
+                )
+                for c in created:
+                    try:
+                        close_fn = getattr(c, "close", None)
+                        if callable(close_fn):
+                            close_fn()
+                    except Exception:  # noqa: BLE001
+                        pass
+                    _force_close_ssh_transport(c)
+
+            asyncio.get_running_loop().create_task(_cleanup_leaked())
+            raise
         entry = _PooledClient(kwargs=kwargs, client=client, last_used_at=now)
         self._clients[key] = entry
         return entry
@@ -761,6 +791,31 @@ def _make_docker_client(docker_module: Any, kwargs: dict[str, Any]) -> Any:
             return docker_module.DockerClient(**client_kwargs)
         finally:
             ssh_adapter_cls._create_paramiko_client = original_create
+
+
+def _force_close_ssh_transport(client: Any) -> None:
+    """Best-effort close of any SSH transport underlying a DockerClient.
+
+    When a DockerClient wraps an SSH connection (via paramiko), the
+    ``requests.Session`` holds ``SSHHTTPAdapter`` instances that each own a
+    ``paramiko.SSHClient``.  Calling ``client.close()`` alone does not always
+    release the SSH channel/socket, so we walk the adapter chain and close the
+    paramiko client explicitly.
+    """
+    api = getattr(client, "api", None)
+    if api is None:
+        return
+    session = getattr(api, "_session", None) or getattr(api, "session", None)
+    if session is None:
+        return
+    for adapter in getattr(session, "adapters", {}).values():
+        ssh_client = getattr(adapter, "ssh_client", None)
+        if ssh_client is None:
+            continue
+        try:
+            ssh_client.close()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def _client_key(host: dict[str, Any]) -> str:
