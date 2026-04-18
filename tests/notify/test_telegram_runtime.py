@@ -20,10 +20,11 @@ class _FakeUpdater:
 
 
 class _FakeApplication:
-    def __init__(self, events: list[str]) -> None:
+    def __init__(self, events: list[str], *, bot_username: str | None = None) -> None:
         self._events = events
         self.handlers: list[Callable[[object, object], Awaitable[None]]] = []
         self.updater = _FakeUpdater(events)
+        self.bot = type("Bot", (), {"username": bot_username})()
 
     def add_handler(self, handler: Callable[[object, object], Awaitable[None]]) -> None:
         self.handlers.append(handler)
@@ -158,7 +159,8 @@ async def test_telegram_runtime_lifecycle_and_authorized_message_flow() -> None:
     await handler(unauthorized, None)
 
     assert len(chat_runtime.calls) == 1
-    assert unauthorized.effective_message.replies == []
+    assert unauthorized.effective_message.replies
+    assert "unauthorized" in unauthorized.effective_message.replies[0].lower()
 
     await runtime.shutdown()
 
@@ -196,6 +198,292 @@ async def test_telegram_runtime_rolls_back_when_start_fails() -> None:
         "app:start",
         "app:shutdown",
     ]
+
+
+@pytest.mark.asyncio
+async def test_telegram_runtime_pairs_first_user_via_auth_command() -> None:
+    events: list[str] = []
+    application = _FakeApplication(events)
+    chat_runtime = _RecordingChatRuntime()
+    persisted: list[str] = []
+
+    runtime = build_telegram_bot_runtime(
+        bot_token="token",
+        chat_runtime=chat_runtime,
+        authorized_user_ids=set(),
+        pairing_code="123123",
+        application_factory=lambda _token: application,
+        handler_binder=lambda app, handler: app.add_handler(handler),
+    )
+
+    assert runtime is not None
+    runtime.set_authorized_user_persist_callback(persisted.append)
+    await runtime.start()
+    handler = application.handlers[0]
+
+    auth_update = _FakeUpdate(user_id=7, chat_id=9001, text="/auth 123123")
+    await handler(auth_update, None)
+
+    assert auth_update.effective_message.replies
+    assert "authorized" in auth_update.effective_message.replies[0].lower()
+    assert persisted == ["7"]
+
+    paired_update = _FakeUpdate(user_id=7, chat_id=9001, text="ping")
+    await handler(paired_update, None)
+
+    assert chat_runtime.calls == [
+        {
+            "prompt": "ping",
+            "user_id": "7",
+            "session_key": "telegram:9001",
+            "fallback": "Agent unavailable right now. Please try again shortly.",
+        }
+    ]
+    assert paired_update.effective_message.replies == ["agent::ping"]
+
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_telegram_runtime_only_pairs_exact_auth_command_with_optional_bot_suffix() -> None:
+    suffix_events: list[str] = []
+    suffix_application = _FakeApplication(suffix_events, bot_username="BotName")
+    suffix_chat_runtime = _RecordingChatRuntime()
+    suffix_persisted: list[str] = []
+
+    suffix_runtime = build_telegram_bot_runtime(
+        bot_token="token",
+        chat_runtime=suffix_chat_runtime,
+        authorized_user_ids=set(),
+        pairing_code="123123",
+        application_factory=lambda _token: suffix_application,
+        handler_binder=lambda app, handler: app.add_handler(handler),
+    )
+
+    assert suffix_runtime is not None
+    suffix_runtime.set_authorized_user_persist_callback(suffix_persisted.append)
+    await suffix_runtime.start()
+    suffix_handler = suffix_application.handlers[0]
+
+    auth_suffix_update = _FakeUpdate(user_id=7, chat_id=9001, text="/auth@BotName 123123")
+    await suffix_handler(auth_suffix_update, None)
+
+    assert auth_suffix_update.effective_message.replies
+    assert "authorized" in auth_suffix_update.effective_message.replies[0].lower()
+    assert suffix_persisted == ["7"]
+
+    suffix_paired_update = _FakeUpdate(user_id=7, chat_id=9001, text="ping")
+    await suffix_handler(suffix_paired_update, None)
+
+    assert suffix_chat_runtime.calls == [
+        {
+            "prompt": "ping",
+            "user_id": "7",
+            "session_key": "telegram:9001",
+            "fallback": "Agent unavailable right now. Please try again shortly.",
+        }
+    ]
+    assert suffix_paired_update.effective_message.replies == ["agent::ping"]
+
+    await suffix_runtime.shutdown()
+
+    boundary_events: list[str] = []
+    boundary_application = _FakeApplication(boundary_events, bot_username="BotName")
+    boundary_chat_runtime = _RecordingChatRuntime()
+    boundary_persisted: list[str] = []
+
+    boundary_runtime = build_telegram_bot_runtime(
+        bot_token="token",
+        chat_runtime=boundary_chat_runtime,
+        authorized_user_ids=set(),
+        pairing_code="123123",
+        application_factory=lambda _token: boundary_application,
+        handler_binder=lambda app, handler: app.add_handler(handler),
+    )
+
+    assert boundary_runtime is not None
+    boundary_runtime.set_authorized_user_persist_callback(boundary_persisted.append)
+    await boundary_runtime.start()
+    boundary_handler = boundary_application.handlers[0]
+
+    guidance_update = _FakeUpdate(user_id=7, chat_id=9001, text="ping")
+    await boundary_handler(guidance_update, None)
+
+    assert boundary_chat_runtime.calls == []
+    assert guidance_update.effective_message.replies
+    guidance_reply = guidance_update.effective_message.replies[0]
+
+    other_bot_update = _FakeUpdate(user_id=7, chat_id=9001, text="/auth@OtherBot 123123")
+    await boundary_handler(other_bot_update, None)
+
+    assert boundary_chat_runtime.calls == []
+    assert boundary_persisted == []
+    assert other_bot_update.effective_message.replies == [guidance_reply]
+
+    authz_update = _FakeUpdate(user_id=7, chat_id=9001, text="/authz 123123")
+    await boundary_handler(authz_update, None)
+
+    assert boundary_chat_runtime.calls == []
+    assert boundary_persisted == []
+    assert authz_update.effective_message.replies == [guidance_reply]
+
+    follow_up = _FakeUpdate(user_id=7, chat_id=9001, text="still unauthorized")
+    await boundary_handler(follow_up, None)
+
+    assert boundary_chat_runtime.calls == []
+    assert follow_up.effective_message.replies == [guidance_reply]
+
+    await boundary_runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_telegram_runtime_temporarily_locks_user_after_repeated_failed_auth_attempts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    application = _FakeApplication(events)
+    chat_runtime = _RecordingChatRuntime()
+    persisted: list[str] = []
+    clock = {"now": 100.0}
+
+    monkeypatch.setattr(
+        "logdog.notify.telegram.time.monotonic",
+        lambda: clock["now"],
+    )
+
+    runtime = build_telegram_bot_runtime(
+        bot_token="token",
+        chat_runtime=chat_runtime,
+        authorized_user_ids=set(),
+        pairing_code="123123",
+        application_factory=lambda _token: application,
+        handler_binder=lambda app, handler: app.add_handler(handler),
+    )
+
+    assert runtime is not None
+    runtime.set_authorized_user_persist_callback(persisted.append)
+    await runtime.start()
+    handler = application.handlers[0]
+
+    for _ in range(5):
+        failed_update = _FakeUpdate(user_id=7, chat_id=9001, text="/auth bad-code")
+        await handler(failed_update, None)
+        assert failed_update.effective_message.replies
+        assert "failed" in failed_update.effective_message.replies[0].lower()
+
+    clock["now"] = 159.0
+    locked_update = _FakeUpdate(user_id=7, chat_id=9001, text="/auth 123123")
+    await handler(locked_update, None)
+
+    assert chat_runtime.calls == []
+    assert persisted == []
+    assert locked_update.effective_message.replies
+    assert "locked" in locked_update.effective_message.replies[0].lower()
+
+    clock["now"] = 160.1
+    unlocked_update = _FakeUpdate(user_id=7, chat_id=9001, text="/auth 123123")
+    await handler(unlocked_update, None)
+
+    assert unlocked_update.effective_message.replies
+    assert "authorized" in unlocked_update.effective_message.replies[0].lower()
+    assert persisted == ["7"]
+
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_telegram_runtime_rejects_invalid_auth_command_with_hint() -> None:
+    events: list[str] = []
+    application = _FakeApplication(events)
+    chat_runtime = _RecordingChatRuntime()
+
+    runtime = build_telegram_bot_runtime(
+        bot_token="token",
+        chat_runtime=chat_runtime,
+        authorized_user_ids=set(),
+        pairing_code="123123",
+        application_factory=lambda _token: application,
+        handler_binder=lambda app, handler: app.add_handler(handler),
+    )
+
+    assert runtime is not None
+    await runtime.start()
+    handler = application.handlers[0]
+
+    update = _FakeUpdate(user_id=7, chat_id=9001, text="/auth bad-code")
+    await handler(update, None)
+
+    assert chat_runtime.calls == []
+    assert update.effective_message.replies
+    reply = update.effective_message.replies[0].lower()
+    assert "failed" in reply
+    assert "/auth" in reply
+
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_telegram_runtime_prompts_unauthorized_user_to_pair() -> None:
+    events: list[str] = []
+    application = _FakeApplication(events)
+    chat_runtime = _RecordingChatRuntime()
+
+    runtime = build_telegram_bot_runtime(
+        bot_token="token",
+        chat_runtime=chat_runtime,
+        authorized_user_ids=set(),
+        pairing_code="123123",
+        application_factory=lambda _token: application,
+        handler_binder=lambda app, handler: app.add_handler(handler),
+    )
+
+    assert runtime is not None
+    await runtime.start()
+    handler = application.handlers[0]
+
+    update = _FakeUpdate(user_id=7, chat_id=9001, text="ping")
+    await handler(update, None)
+
+    assert chat_runtime.calls == []
+    assert update.effective_message.replies
+    assert "/auth" in update.effective_message.replies[0]
+
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_telegram_runtime_allows_only_first_successful_pairing() -> None:
+    events: list[str] = []
+    application = _FakeApplication(events)
+    chat_runtime = _RecordingChatRuntime()
+    persisted: list[str] = []
+
+    runtime = build_telegram_bot_runtime(
+        bot_token="token",
+        chat_runtime=chat_runtime,
+        authorized_user_ids=set(),
+        pairing_code="123123",
+        application_factory=lambda _token: application,
+        handler_binder=lambda app, handler: app.add_handler(handler),
+    )
+
+    assert runtime is not None
+    runtime.set_authorized_user_persist_callback(persisted.append)
+    await runtime.start()
+    handler = application.handlers[0]
+
+    first = _FakeUpdate(user_id=7, chat_id=9001, text="/auth 123123")
+    second = _FakeUpdate(user_id=8, chat_id=9002, text="/auth 123123")
+
+    await handler(first, None)
+    await handler(second, None)
+
+    assert persisted == ["7"]
+    assert second.effective_message.replies
+    assert "already" in second.effective_message.replies[0].lower()
+    assert "authorized" in second.effective_message.replies[0].lower()
+
+    await runtime.shutdown()
 
 
 @pytest.mark.asyncio
@@ -364,6 +652,12 @@ async def test_bot_commands_registered_on_start_when_sender_set() -> None:
 
     assert len(sender.set_commands_calls) == 1
     assert sender.set_commands_calls[0] == TELEGRAM_BOT_COMMANDS
+    auth_command = next(
+        entry for entry in sender.set_commands_calls[0] if entry["command"] == "auth"
+    )
+    assert "/auth <code>" in auth_command["description"]
+    assert "/auth@<bot_username> <code>" in auth_command["description"]
+    assert "first Telegram user" not in auth_command["description"]
 
     await runtime.shutdown()
 
@@ -397,9 +691,12 @@ async def test_help_command_replies_with_command_list() -> None:
     assert chat_runtime.calls == []  # agent not invoked
     assert update.effective_message.replies
     reply = update.effective_message.replies[0]
+    assert "/auth <code>" in reply
+    assert "/auth@<bot_username> <code>" in reply
     assert "/msg" in reply
     assert "/help" in reply
     assert "/status" in reply
+    assert "first Telegram user" not in reply
 
     await runtime.shutdown()
 

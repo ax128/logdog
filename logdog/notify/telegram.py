@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hmac
 import json
 import importlib
 import inspect
@@ -27,12 +28,18 @@ SendFunc = Callable[..., Awaitable[None] | None]
 logger = logging.getLogger(__name__)
 TELEGRAM_AUTO_TARGET = "__auto__"
 TELEGRAM_BOT_COMMANDS = [
+    {
+        "command": "auth",
+        "description": "Pair with /auth <code> (or /auth@<bot_username> <code> if needed)",
+    },
     {"command": "msg", "description": "Switch message mode (txt|md|doc)"},
     {"command": "help", "description": "Show available commands"},
     {"command": "status", "description": "Show agent status"},
 ]
 _AUTO_TARGET_ATTR = "_logdog_supports_auto_target"
 _STREAM_EDIT_MIN_INTERVAL_SEC = 0.35
+_AUTH_FAILURE_LIMIT = 5
+_AUTH_LOCKOUT_SECONDS = 60.0
 
 
 def telegram_markdown_retryable(error: BaseException | None) -> bool:
@@ -64,6 +71,23 @@ def telegram_markdown_unsafe(text: str) -> bool:
         if left.isalnum() and right.isalnum():
             return True
     return False
+
+
+def _parse_telegram_command(text: str) -> tuple[str, str]:
+    normalized_text = str(text or "").strip()
+    if normalized_text == "" or not normalized_text.startswith("/"):
+        return "", ""
+    parts = normalized_text.split(maxsplit=1)
+    command = parts[0].strip().lower().split("@", 1)[0]
+    arguments = parts[1].strip() if len(parts) == 2 else ""
+    return command, arguments
+
+
+def _telegram_command_token(text: str) -> str:
+    normalized_text = str(text or "").strip()
+    if normalized_text == "" or not normalized_text.startswith("/"):
+        return ""
+    return normalized_text.split(maxsplit=1)[0].strip()
 
 
 class TelegramBotTokenSender:
@@ -479,27 +503,49 @@ class TelegramBotRuntime:
         application: Any,
         chat_runtime: Any,
         authorized_user_ids: set[str],
+        pairing_code: str | None = None,
         message_mode_setter: Callable[[str], str] | None = None,
         message_mode_getter: Callable[[], str] | None = None,
     ) -> None:
         self._application = application
         self._chat_runtime = chat_runtime
         self._authorized_user_ids = {str(item).strip() for item in authorized_user_ids}
+        normalized_pairing_code = str(pairing_code or "").strip()
+        self._pairing_code = normalized_pairing_code or None
         self._message_mode_setter = message_mode_setter
         self._message_mode_getter = message_mode_getter
         self._sender: Any | None = None
         self._started = False
-        self._auto_authorize = len(self._authorized_user_ids) == 0
+        self._pairing_open = (
+            self._pairing_code is not None and len(self._authorized_user_ids) == 0
+        )
         self._on_new_authorized_user: Callable[[str], None] | None = None
         self._last_chat_id: str | None = None
         self._on_chat_id_seen: Callable[[str], None] | None = None
+        self._failed_auth_attempts: dict[str, int] = {}
+        self._auth_lockouts: dict[str, float] = {}
+
+    def _normalized_bot_username(self) -> str:
+        bot = getattr(self._application, "bot", None)
+        username = getattr(bot, "username", "")
+        return str(username or "").strip().lstrip("@").lower()
+
+    def _auth_command_targets_current_bot(self, text: str) -> bool:
+        command_token = _telegram_command_token(text).lower()
+        if command_token == "/auth":
+            return True
+        command_name, separator, bot_suffix = command_token.partition("@")
+        if command_name != "/auth" or separator == "":
+            return False
+        current_bot_username = self._normalized_bot_username()
+        return current_bot_username != "" and bot_suffix == current_bot_username
 
     def set_chat_id_seen_callback(self, callback: Callable[[str], None]) -> None:
         """Register a callback invoked whenever a new chat_id is observed."""
         self._on_chat_id_seen = callback
 
     def set_authorized_user_persist_callback(self, callback: Callable[[str], None]) -> None:
-        """Register a callback invoked when a new user is auto-authorized."""
+        """Register a callback invoked when a new user is successfully paired."""
         self._on_new_authorized_user = callback
 
     def set_sender(self, sender: Any) -> None:
@@ -569,39 +615,16 @@ class TelegramBotRuntime:
         reply_text: Callable[[str], Awaitable[None] | None],
     ) -> bool:
         normalized_user_id = str(user_id).strip()
-        if normalized_user_id not in self._authorized_user_ids:
-            if self._auto_authorize and normalized_user_id:
-                # python-telegram-bot dispatches updates serially on a single asyncio
-                # event loop, so this check-then-set is safe in the standard deployment.
-                # Multi-process deployments would need an external lock here.
-                self._authorized_user_ids.add(normalized_user_id)
-                self._auto_authorize = False
-                logger.info("auto-authorized first Telegram user: %s", normalized_user_id)
-                if self._on_new_authorized_user is not None:
-                    try:
-                        self._on_new_authorized_user(normalized_user_id)
-                    except Exception:  # noqa: BLE001
-                        logger.warning(
-                            "failed to persist authorized user %s — user is authorized "
-                            "this session but will need to message again after restart",
-                            normalized_user_id,
-                            exc_info=True,
-                        )
-            else:
-                return False
-
-        # Track the most recent chat_id so notify sender can use it without
-        # calling getUpdates (which conflicts with start_polling).
-        new_chat_id = str(chat_id)
-        if new_chat_id != self._last_chat_id:
-            self._last_chat_id = new_chat_id
-            if self._on_chat_id_seen is not None:
-                try:
-                    self._on_chat_id_seen(new_chat_id)
-                except Exception:  # noqa: BLE001
-                    logger.warning("on_chat_id_seen callback failed", exc_info=True)
-
         normalized_text = str(text or "").strip()
+        if normalized_user_id not in self._authorized_user_ids:
+            return await self._handle_unauthorized_message(
+                user_id=normalized_user_id,
+                chat_id=chat_id,
+                text=normalized_text or text,
+                reply_text=reply_text,
+            )
+
+        self._remember_chat_id(chat_id)
 
         # Route slash commands before touching the agent.
         if normalized_text.startswith("/"):
@@ -627,6 +650,44 @@ class TelegramBotRuntime:
         )
         return True
 
+    async def _handle_unauthorized_message(
+        self,
+        *,
+        user_id: str,
+        chat_id: str,
+        text: str,
+        reply_text: Callable[[str], Awaitable[None] | None],
+    ) -> bool:
+        normalized_text = str(text or "").strip()
+        command, _arguments = _parse_telegram_command(normalized_text)
+        if command == "/auth" and self._auth_command_targets_current_bot(normalized_text):
+            return await self._handle_auth_command(
+                user_id=user_id,
+                chat_id=chat_id,
+                text=normalized_text,
+                reply_text=reply_text,
+            )
+
+        if self._pairing_open:
+            await _maybe_await_reply(
+                reply_text,
+                "Unauthorized. Pair this Telegram account with /auth <code>.",
+            )
+            return True
+
+        if self._pairing_code is not None:
+            await _maybe_await_reply(
+                reply_text,
+                "Unauthorized. This bot is already authorized for another Telegram account.",
+            )
+            return True
+
+        await _maybe_await_reply(
+            reply_text,
+            "Unauthorized. Telegram pairing is not enabled.",
+        )
+        return True
+
     async def _dispatch_command(
         self,
         *,
@@ -636,9 +697,14 @@ class TelegramBotRuntime:
         reply_text: Callable[[str], Awaitable[None] | None],
     ) -> bool:
         """Route a slash command to the appropriate handler."""
-        cmd_raw = text.split(maxsplit=1)[0].lower()
-        # Strip optional @BotName suffix (e.g. /help@MyBot).
-        cmd = cmd_raw.split("@", 1)[0]
+        cmd, _arguments = _parse_telegram_command(text)
+
+        if cmd == "/auth":
+            await _maybe_await_reply(
+                reply_text,
+                "This Telegram account is already authorized.",
+            )
+            return True
 
         if cmd == "/msg":
             return await self._handle_message_mode_command(text=text, reply_text=reply_text)
@@ -672,6 +738,100 @@ class TelegramBotRuntime:
         )
         return True
 
+    async def _handle_auth_command(
+        self,
+        *,
+        user_id: str,
+        chat_id: str,
+        text: str,
+        reply_text: Callable[[str], Awaitable[None] | None],
+    ) -> bool:
+        command, arguments = _parse_telegram_command(text)
+        if self._pairing_code is None:
+            await _maybe_await_reply(
+                reply_text,
+                "Unauthorized. Telegram pairing is not enabled.",
+            )
+            return True
+
+        if not self._pairing_open:
+            await _maybe_await_reply(
+                reply_text,
+                "Unauthorized. This bot is already authorized for another Telegram account.",
+            )
+            return True
+
+        if command != "/auth" or not self._auth_command_targets_current_bot(text):
+            await _maybe_await_reply(
+                reply_text,
+                "Unauthorized. Pair this Telegram account with /auth <code>.",
+            )
+            return True
+
+        if self._auth_lockout_active(user_id):
+            await _maybe_await_reply(
+                reply_text,
+                "Authorization locked. Too many failed attempts. Try again in 60 seconds.",
+            )
+            return True
+
+        if arguments == "":
+            self._record_failed_auth_attempt(user_id)
+            await _maybe_await_reply(
+                reply_text,
+                "Authorization failed. Usage: /auth <code>.",
+            )
+            return True
+
+        provided_code = arguments
+        if not hmac.compare_digest(provided_code, self._pairing_code):
+            self._record_failed_auth_attempt(user_id)
+            await _maybe_await_reply(
+                reply_text,
+                "Authorization failed. Pair with /auth <code>.",
+            )
+            return True
+
+        self._clear_auth_state(user_id)
+        self._authorized_user_ids.add(user_id)
+        self._pairing_open = False
+        logger.info("paired first Telegram user via /auth: %s", user_id)
+        if self._on_new_authorized_user is not None:
+            try:
+                self._on_new_authorized_user(user_id)
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "failed to persist paired Telegram user %s — user is authorized "
+                    "this session but will need to pair again after restart",
+                    user_id,
+                    exc_info=True,
+                )
+        self._remember_chat_id(chat_id)
+        await _maybe_await_reply(
+            reply_text,
+            "Authorization successful. This Telegram account is now authorized.",
+        )
+        return True
+
+    def _auth_lockout_active(self, user_id: str) -> bool:
+        lockout_until = self._auth_lockouts.get(user_id)
+        if lockout_until is None:
+            return False
+        if time.monotonic() >= lockout_until:
+            self._clear_auth_state(user_id)
+            return False
+        return True
+
+    def _record_failed_auth_attempt(self, user_id: str) -> None:
+        attempts = self._failed_auth_attempts.get(user_id, 0) + 1
+        self._failed_auth_attempts[user_id] = attempts
+        if attempts >= _AUTH_FAILURE_LIMIT:
+            self._auth_lockouts[user_id] = time.monotonic() + _AUTH_LOCKOUT_SECONDS
+
+    def _clear_auth_state(self, user_id: str) -> None:
+        self._failed_auth_attempts.pop(user_id, None)
+        self._auth_lockouts.pop(user_id, None)
+
     async def _invoke_and_reply(
         self,
         *,
@@ -694,9 +854,11 @@ class TelegramBotRuntime:
         )
 
         if use_streaming:
+            sender = self._sender
+            assert sender is not None
             mode = self._resolve_current_message_mode()
             fmt = "markdown" if mode in ("md", "doc") else "plain"
-            stream_sender = TelegramStreamSender(self._sender, chat_id)
+            stream_sender = TelegramStreamSender(sender, chat_id)
 
             try:
                 result = await self._chat_runtime.ainvoke_text_streamed(
@@ -717,7 +879,7 @@ class TelegramBotRuntime:
             parse_mode = "Markdown" if fmt == "markdown" else ""
             for extra in chunks[1:]:
                 try:
-                    self._sender.send_message(chat_id, extra, parse_mode=parse_mode)
+                    sender.send_message(chat_id, extra, parse_mode=parse_mode)
                 except Exception:  # noqa: BLE001
                     logger.warning("telegram overflow chunk send failed", exc_info=True)
             return
@@ -796,12 +958,27 @@ class TelegramBotRuntime:
         except Exception:
             return normalize_message_mode(None)
 
+    def _remember_chat_id(self, chat_id: str) -> None:
+        # Track the most recent chat_id so notify sender can use it without
+        # calling getUpdates (which conflicts with start_polling).
+        new_chat_id = str(chat_id)
+        if new_chat_id == self._last_chat_id:
+            return
+        self._last_chat_id = new_chat_id
+        if self._on_chat_id_seen is None:
+            return
+        try:
+            self._on_chat_id_seen(new_chat_id)
+        except Exception:  # noqa: BLE001
+            logger.warning("on_chat_id_seen callback failed", exc_info=True)
+
 
 def build_telegram_bot_runtime(
     *,
     bot_token: str,
     chat_runtime: Any,
     authorized_user_ids: set[str],
+    pairing_code: str | None = None,
     message_mode_setter: Callable[[str], str] | None = None,
     message_mode_getter: Callable[[], str] | None = None,
     application_factory: Callable[[str], Any] | None = None,
@@ -821,6 +998,7 @@ def build_telegram_bot_runtime(
         application=application,
         chat_runtime=chat_runtime,
         authorized_user_ids=authorized_user_ids,
+        pairing_code=pairing_code,
         message_mode_setter=message_mode_setter,
         message_mode_getter=message_mode_getter,
     )
