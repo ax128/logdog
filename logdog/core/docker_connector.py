@@ -490,7 +490,7 @@ class DockerClientPool:
                 # Wait for the background thread to finish so `created` is
                 # populated, then close the leaked client.
                 await asyncio.get_running_loop().run_in_executor(
-                    None, thread_done.wait,
+                    None, lambda: thread_done.wait(timeout=max(timeout_seconds * 10, 60.0)),
                 )
                 for c in created:
                     try:
