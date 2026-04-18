@@ -687,3 +687,71 @@ async def test_open_stream_handle_timeout_closes_leaked_client() -> None:
 
     assert len(leaked) == 1
     assert leaked[0].closed is True
+
+
+@pytest.mark.asyncio
+async def test_close_resources_closes_ssh_transport_when_main_close_raises() -> None:
+    """If client.close() raises (e.g. SSHHTTPAdapter.super().close() fails),
+    _close_resources must still close the underlying SSH transport."""
+    ssh_close_calls: list[str] = []
+
+    class _FakeSSHClient:
+        def close(self) -> None:
+            ssh_close_calls.append("closed")
+
+    class _FakeAdapter:
+        ssh_client = _FakeSSHClient()
+
+    class _FakeSession:
+        adapters = {"ssh://": _FakeAdapter()}
+
+    class _FakeApi:
+        _session = _FakeSession()
+
+    class _BrokenCloseClient:
+        api = _FakeApi()
+
+        def close(self) -> None:
+            raise RuntimeError("pool cleanup exploded")
+
+    handle = docker_connector._StreamHandle(
+        client=_BrokenCloseClient(),
+        operation=lambda _client: iter([{"line": "hello"}]),
+        to_thread=docker_connector._run_in_daemon_thread,
+        loop=asyncio.get_running_loop(),
+    )
+
+    async for _ in handle:
+        pass
+
+    await handle.aclose()
+
+    assert len(ssh_close_calls) >= 1
+
+
+@pytest.mark.asyncio
+async def test_close_resources_no_error_for_non_ssh_client() -> None:
+    """_close_resources must not break for clients that have no SSH adapter
+    (e.g. local Unix socket clients)."""
+
+    class _PlainClient:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    client = _PlainClient()
+    handle = docker_connector._StreamHandle(
+        client=client,
+        operation=lambda _client: iter([{"line": "hello"}]),
+        to_thread=docker_connector._run_in_daemon_thread,
+        loop=asyncio.get_running_loop(),
+    )
+
+    async for _ in handle:
+        pass
+
+    await handle.aclose()
+
+    assert client.closed is True

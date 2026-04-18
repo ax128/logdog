@@ -246,6 +246,7 @@ class _StreamHandle:
                         close_fn()
                     except Exception:  # noqa: BLE001
                         pass
+                _force_close_ssh_transport(self._client)
                 self._client_closed = True
 
 
