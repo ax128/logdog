@@ -142,7 +142,7 @@ class EventStreamWatcher:
                 if not managed_mode:
                     return
                 _backoff_attempt = 0
-            if managed_mode:
+            if managed_mode or _backoff_attempt > 0:
                 delay = min(
                     self._reconnect_backoff_seconds * (2 ** _backoff_attempt),
                     _MAX_RECONNECT_BACKOFF_SECONDS,
