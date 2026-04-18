@@ -227,8 +227,13 @@ def test_build_telegram_runtime_prefers_explicit_authorized_users_over_persisted
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class _FakeRuntime:
-        def __init__(self, authorized_user_ids: set[str]) -> None:
+        def __init__(
+            self,
+            authorized_user_ids: set[str],
+            pairing_code: str | None,
+        ) -> None:
             self._authorized_user_ids = set(authorized_user_ids)
+            self._pairing_code = pairing_code
 
         def set_authorized_user_persist_callback(self, _callback) -> None:
             return None
@@ -244,7 +249,10 @@ def test_build_telegram_runtime_prefers_explicit_authorized_users_over_persisted
     )
 
     def build_runtime(**kwargs):
-        return _FakeRuntime(set(kwargs["authorized_user_ids"]))
+        return _FakeRuntime(
+            set(kwargs["authorized_user_ids"]),
+            kwargs.get("pairing_code"),
+        )
 
     monkeypatch.setattr(main_module, "build_telegram_bot_runtime", build_runtime)
 
@@ -255,6 +263,56 @@ def test_build_telegram_runtime_prefers_explicit_authorized_users_over_persisted
 
     assert runtime is not None
     assert runtime._authorized_user_ids == {"cfg-user"}
+
+
+def test_build_telegram_runtime_uses_persisted_users_when_config_list_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _FakeRuntime:
+        def __init__(
+            self,
+            authorized_user_ids: set[str],
+            pairing_code: str | None,
+        ) -> None:
+            self._authorized_user_ids = set(authorized_user_ids)
+            self._pairing_code = pairing_code
+
+        def set_authorized_user_persist_callback(self, _callback) -> None:
+            return None
+
+        def set_sender(self, _sender) -> None:
+            return None
+
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "telegram-token")
+    monkeypatch.setattr(
+        main_module,
+        "_load_persisted_authorized_users",
+        lambda: {"persisted-user"},
+    )
+
+    def build_runtime(**kwargs):
+        return _FakeRuntime(
+            set(kwargs["authorized_user_ids"]),
+            kwargs.get("pairing_code"),
+        )
+
+    monkeypatch.setattr(main_module, "build_telegram_bot_runtime", build_runtime)
+
+    runtime = main_module._build_telegram_runtime_from_config(
+        app_config={
+            "agent": {
+                "authorized_users": {
+                    "telegram": [],
+                    "telegram_pairing_code": "123123",
+                }
+            }
+        },
+        chat_runtime=None,
+    )
+
+    assert runtime is not None
+    assert runtime._authorized_user_ids == {"persisted-user"}
+    assert runtime._pairing_code == "123123"
 
 
 @pytest.mark.asyncio

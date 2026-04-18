@@ -2613,6 +2613,19 @@ def _resolve_authorized_telegram_users(
     )
 
 
+def _resolve_telegram_pairing_code(app_config: dict[str, Any] | None) -> str | None:
+    if not isinstance(app_config, dict):
+        return None
+    agent_cfg = app_config.get("agent")
+    if not isinstance(agent_cfg, dict):
+        return None
+    authorized_users = agent_cfg.get("authorized_users")
+    if not isinstance(authorized_users, dict):
+        return None
+    pairing_code = str(authorized_users.get("telegram_pairing_code") or "").strip()
+    return pairing_code or None
+
+
 _AUTHORIZED_USERS_STATE_FILE = "data/logdog_authorized.json"
 _CHAT_ID_CACHE_FILE = "data/logdog_chat_id.json"
 
@@ -2709,9 +2722,8 @@ def _load_persisted_authorized_users() -> set[str]:
 def _persist_authorized_user(user_id: str) -> None:
     """Append user_id to the authorized-users state file using an atomic replace.
 
-    Called at most once per process lifetime (auto-authorize fires only for the
-    first message when the authorized set is empty), so no concurrent-write guard
-    is needed beyond the atomic os.replace.
+    Called at most once per process lifetime during the initial `/auth` pairing,
+    so no concurrent-write guard is needed beyond the atomic os.replace.
     """
     import tempfile
 
@@ -2820,20 +2832,28 @@ def _build_telegram_runtime_from_config(
     authorized_telegram_users, has_explicit_telegram_users = (
         _resolve_authorized_telegram_users(app_config)
     )
-    # Only fall back to persisted state when the config does not explicitly
-    # declare the Telegram allowlist.
-    if not has_explicit_telegram_users:
+    telegram_pairing_code = _resolve_telegram_pairing_code(app_config)
+    # When the configured allowlist is omitted or explicitly empty, keep loading
+    # the persisted state file so paired users survive restarts.
+    if not has_explicit_telegram_users or not authorized_telegram_users:
         authorized_telegram_users |= _load_persisted_authorized_users()
     telegram_bot_token = _resolve_telegram_bot_token(app_config)
     if telegram_bot_token and not authorized_telegram_users:
-        logger.info(
-            "Telegram Bot: no authorized users configured — "
-            "first user to send a message will be auto-authorized"
-        )
+        if telegram_pairing_code is not None:
+            logger.info(
+                "Telegram Bot: no authorized users configured — "
+                "first user to send /auth <code> will be authorized"
+            )
+        else:
+            logger.warning(
+                "Telegram Bot: no authorized users configured and no pairing code "
+                "set — Telegram users will remain unauthorized"
+            )
     runtime = build_telegram_bot_runtime(
         bot_token=telegram_bot_token,
         chat_runtime=chat_runtime,
         authorized_user_ids=authorized_telegram_users,
+        pairing_code=telegram_pairing_code,
         message_mode_setter=message_mode_setter,
         message_mode_getter=message_mode_getter,
         application_factory=telegram_application_factory,
