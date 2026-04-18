@@ -509,9 +509,16 @@ class DockerClientPool:
         return entry
 
     async def _close_client(self, client: Any) -> None:
-        close_fn = getattr(client, "close", None)
-        if callable(close_fn):
-            await self._to_thread(close_fn)
+        def _close() -> None:
+            close_fn = getattr(client, "close", None)
+            if callable(close_fn):
+                try:
+                    close_fn()
+                except Exception:  # noqa: BLE001
+                    pass
+            _force_close_ssh_transport(client)
+
+        await self._to_thread(_close)
 
     async def _is_client_healthy(
         self, client: Any, *, timeout_seconds: float
@@ -676,9 +683,13 @@ async def _run_with_client(host: dict[str, Any], operation) -> Any:
         try:
             return operation(client)
         finally:
-            close_fn = getattr(client, "close", None)
-            if callable(close_fn):
-                close_fn()
+            try:
+                close_fn = getattr(client, "close", None)
+                if callable(close_fn):
+                    close_fn()
+            except Exception:  # noqa: BLE001
+                pass
+            _force_close_ssh_transport(client)
 
     return await asyncio.wait_for(_TO_THREAD(task), timeout=timeout_seconds)
 
