@@ -76,3 +76,13 @@ def test_get_system_metrics_schema_requires_host_name() -> None:
         schema()
     instance = schema(host_name="prod-a")
     assert instance.host_name == "prod-a"
+
+
+def test_exec_container_schema_exposes_timeout_seconds() -> None:
+    meta = TOOL_METAS["exec_container"]
+    schema = build_args_schema(meta["name"], meta["parameters"])
+    assert schema is not None
+    fields = schema.model_fields
+    assert "timeout_seconds" in fields
+    assert fields["timeout_seconds"].is_required() is False
+    assert fields["timeout_seconds"].default == 30

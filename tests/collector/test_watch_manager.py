@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import pytest
 
+import logdog.collector.log_stream as log_stream_module
+from logdog.collector.log_stream import LogStreamWatcher, run_alert_once
+from logdog.collector.storm import AlertStormController
+from logdog.pipeline.cooldown import CooldownStore
 from logdog.collector.watch_manager import WatchManager
 
 
@@ -222,3 +226,110 @@ async def test_watch_manager_reload_keeps_old_watchers_when_candidate_start_fail
     assert manager._event_watchers["host-a"] is original_event
 
     await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_watch_manager_reload_host_configs_cleans_old_log_watcher_pending_tasks() -> (
+    None
+):
+    host_manager = _HostManagerStub()
+    build_round = {"n": 0}
+    controllers: list[AlertStormController] = []
+
+    async def _notify(_host: str, _message: str, _category: str) -> bool:
+        return True
+
+    async def _save_alert(_payload: dict[str, object]) -> bool:
+        return True
+
+    async def _save_storm_event(_payload: dict[str, object]) -> bool:
+        return True
+
+    def build_log_watcher(host: dict) -> LogStreamWatcher:
+        build_round["n"] += 1
+        controller = AlertStormController(
+            enabled=True,
+            window_seconds=60,
+            threshold=1,
+            suppress_minutes=1,
+        )
+        controllers.append(controller)
+        return LogStreamWatcher(
+            host=host,
+            stream_logs=None,
+            notifier_send=_notify,
+            save_alert=_save_alert,
+            storm_controller=controller,
+        )
+
+    def build_event_watcher(host: dict) -> _EventWatcherStub:
+        return _EventWatcherStub(host)
+
+    manager = WatchManager(
+        host_manager=host_manager,
+        log_watcher_factory=build_log_watcher,
+        event_watcher_factory=build_event_watcher,
+    )
+
+    await manager.start()
+    original_controller = controllers[0]
+    dedup_store = CooldownStore(default_minutes=0.001)
+
+    await run_alert_once(
+        "ERROR reload dedup",
+        host="host-a",
+        container_id="c1",
+        container_name="svc-a",
+        timestamp="2026-04-19T10:00:00Z",
+        cooldown_store=dedup_store,
+        notifier_send=_notify,
+        save_alert=_save_alert,
+        config={"llm": {"enabled": False}},
+    )
+    await run_alert_once(
+        "ERROR reload dedup",
+        host="host-a",
+        container_id="c1",
+        container_name="svc-a",
+        timestamp="2026-04-19T10:00:01Z",
+        cooldown_store=dedup_store,
+        notifier_send=_notify,
+        save_alert=_save_alert,
+        config={"llm": {"enabled": False}},
+    )
+    storm_store = CooldownStore()
+    await run_alert_once(
+        "ERROR reload storm",
+        host="host-a",
+        container_id="c1",
+        container_name="svc-a",
+        timestamp="2026-04-19T10:00:02Z",
+        cooldown_store=storm_store,
+        notifier_send=_notify,
+        save_alert=_save_alert,
+        save_storm_event=_save_storm_event,
+        storm_controller=original_controller,
+        config={"llm": {"enabled": False}},
+    )
+
+    assert any(key[0] == "host-a" for key in log_stream_module._PENDING_DEDUP_TASKS)
+    assert any(
+        key[0] == id(original_controller)
+        for key in log_stream_module._PENDING_STORM_END_TASKS
+    )
+
+    try:
+        await manager.reload_host_configs(["host-a"])
+        assert len(controllers) == 2
+        assert not any(
+            key[0] == id(original_controller)
+            for key in log_stream_module._PENDING_STORM_END_TASKS
+        )
+        assert not any(
+            key[0] == "host-a" for key in log_stream_module._PENDING_DEDUP_TASKS
+        )
+        assert original_controller._active_by_category == {}
+        assert original_controller._recent_by_category == {}
+    finally:
+        await manager.shutdown()
+        await log_stream_module.cancel_pending_dedup_tasks()

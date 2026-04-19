@@ -12,6 +12,8 @@ from typing import Any, AsyncIterator, cast
 _IMPORT_MODULE = importlib.import_module
 _STREAM_END = object()
 _DEFAULT_STREAM_QUEUE_MAXSIZE = 1024
+_DEFAULT_EXEC_TIMEOUT_SECONDS = 30
+_MAX_EXEC_COMMAND_CHARS = 1000
 
 
 async def _run_in_daemon_thread(fn: Any) -> Any:
@@ -364,13 +366,17 @@ class DockerClientPool:
         container: dict[str, Any],
         *,
         command: str,
+        timeout_seconds: int = _DEFAULT_EXEC_TIMEOUT_SECONDS,
         max_output_chars: int = 2000,
     ) -> dict[str, Any]:
         container_id = _container_id(container)
         return await self._run(
             host,
             _exec_container_operation(
-                container_id, command=command, max_output_chars=max_output_chars
+                container_id,
+                command=command,
+                timeout_seconds=timeout_seconds,
+                max_output_chars=max_output_chars,
             ),
         )
 
@@ -665,11 +671,18 @@ async def exec_container_for_host(
     container: dict[str, Any],
     *,
     command: str,
+    timeout_seconds: int = _DEFAULT_EXEC_TIMEOUT_SECONDS,
     max_output_chars: int = 2000,
 ) -> dict[str, Any]:
     container_id = _container_id(container)
     return await _run_with_client(
-        host, _exec_container_operation(container_id, command=command, max_output_chars=max_output_chars)
+        host,
+        _exec_container_operation(
+            container_id,
+            command=command,
+            timeout_seconds=timeout_seconds,
+            max_output_chars=max_output_chars,
+        ),
     )
 
 
@@ -1065,17 +1078,46 @@ def _restart_container_operation(container_id: str, *, timeout: int = 10):
 
 
 def _exec_container_operation(
-    container_id: str, *, command: str, max_output_chars: int = 2000
+    container_id: str,
+    *,
+    command: str,
+    timeout_seconds: int = _DEFAULT_EXEC_TIMEOUT_SECONDS,
+    max_output_chars: int = 2000,
 ):
     """Return an operation that runs a command inside a container via exec_run."""
     if not str(command or "").strip():
         raise ValueError("command must not be empty")
+    if len(command) > _MAX_EXEC_COMMAND_CHARS:
+        raise ValueError(
+            f"command must be <= {_MAX_EXEC_COMMAND_CHARS} characters"
+        )
+    timeout_seconds_int = int(timeout_seconds)
+    if timeout_seconds_int <= 0:
+        raise ValueError("timeout_seconds must be > 0")
     _max = int(max_output_chars)
 
     def operation(client: Any) -> dict[str, Any]:
         container_obj = client.containers.get(container_id)
         container_name = str(getattr(container_obj, "name", "") or container_id)
-        exit_code, output = container_obj.exec_run(command, demux=True)
+        wrapped_command = [
+            "/bin/sh",
+            "-lc",
+            (
+                'cmd="$1"; timeout="$2"; '
+                '/bin/sh -lc "$cmd" & pid=$!; '
+                '( sleep "$timeout"; kill -TERM "$pid" 2>/dev/null; '
+                'sleep 1; kill -KILL "$pid" 2>/dev/null ) & killer=$!; '
+                'wait "$pid"; status=$?; '
+                'kill "$killer" 2>/dev/null || true; '
+                'wait "$killer" 2>/dev/null || true; '
+                'if [ "$status" -eq 143 ] || [ "$status" -eq 137 ]; then exit 124; fi; '
+                'exit "$status"'
+            ),
+            "logdog-exec",
+            command,
+            str(timeout_seconds_int),
+        ]
+        exit_code, output = container_obj.exec_run(wrapped_command, demux=True)
         exit_code_int = int(exit_code) if exit_code is not None else -1
 
         # output is a (stdout_bytes, stderr_bytes) tuple when demux=True.
@@ -1092,6 +1134,11 @@ def _exec_container_operation(
 
         stdout_text = _decode(stdout_bytes)
         stderr_text = _decode(stderr_bytes)
+        _raise_if_exec_wrapper_dependency_missing(
+            stdout_text=stdout_text,
+            stderr_text=stderr_text,
+            exit_code=exit_code_int,
+        )
 
         # Truncate combined output to stay within caller-defined char limit.
         combined = stdout_text
@@ -1104,11 +1151,36 @@ def _exec_container_operation(
             "container_id": container_id,
             "container_name": container_name,
             "command": command,
+            "timeout_seconds": timeout_seconds_int,
             "exit_code": exit_code_int,
             "output": combined,
         }
 
     return operation
+
+
+def _raise_if_exec_wrapper_dependency_missing(
+    *,
+    stdout_text: str,
+    stderr_text: str,
+    exit_code: int,
+) -> None:
+    if int(exit_code) != 127:
+        return
+    combined = "\n".join(
+        part for part in (stdout_text.strip(), stderr_text.strip()) if part != ""
+    )
+    normalized = combined.lower()
+    if "sleep: not found" in normalized:
+        raise RuntimeError(
+            "exec_container timeout wrapper requires /bin/sh and sleep inside the target container"
+        )
+    if "/bin/sh" in normalized and (
+        "no such file" in normalized or "not found" in normalized
+    ):
+        raise RuntimeError(
+            "exec_container timeout wrapper requires /bin/sh inside the target container"
+        )
 
 
 def _normalize_log_entries(payload: Any) -> list[dict[str, Any]]:

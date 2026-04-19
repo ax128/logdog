@@ -9,6 +9,7 @@ import mimetypes
 import ssl
 import time
 import uuid
+from collections import deque
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
@@ -524,6 +525,8 @@ class TelegramBotRuntime:
         self._on_chat_id_seen: Callable[[str], None] | None = None
         self._failed_auth_attempts: dict[str, int] = {}
         self._auth_lockouts: dict[str, float] = {}
+        self._global_failed_auth_attempts: deque[float] = deque()
+        self._global_auth_lockout_until: float | None = None
 
     def _normalized_bot_username(self) -> str:
         bot = getattr(self._application, "bot", None)
@@ -768,7 +771,7 @@ class TelegramBotRuntime:
             )
             return True
 
-        if self._auth_lockout_active(user_id):
+        if self._pairing_lockout_active() or self._auth_lockout_active(user_id):
             await _maybe_await_reply(
                 reply_text,
                 "Authorization locked. Too many failed attempts. Try again in 60 seconds.",
@@ -793,6 +796,7 @@ class TelegramBotRuntime:
             return True
 
         self._clear_auth_state(user_id)
+        self._clear_global_auth_state()
         self._authorized_user_ids.add(user_id)
         self._pairing_open = False
         logger.info("paired first Telegram user via /auth: %s", user_id)
@@ -822,15 +826,39 @@ class TelegramBotRuntime:
             return False
         return True
 
+    def _pairing_lockout_active(self) -> bool:
+        if self._global_auth_lockout_until is None:
+            return False
+        if time.monotonic() >= self._global_auth_lockout_until:
+            self._clear_global_auth_state()
+            return False
+        return True
+
     def _record_failed_auth_attempt(self, user_id: str) -> None:
+        now = time.monotonic()
         attempts = self._failed_auth_attempts.get(user_id, 0) + 1
         self._failed_auth_attempts[user_id] = attempts
         if attempts >= _AUTH_FAILURE_LIMIT:
-            self._auth_lockouts[user_id] = time.monotonic() + _AUTH_LOCKOUT_SECONDS
+            self._auth_lockouts[user_id] = now + _AUTH_LOCKOUT_SECONDS
+        self._prune_global_auth_failures(now)
+        self._global_failed_auth_attempts.append(now)
+        if len(self._global_failed_auth_attempts) >= _AUTH_FAILURE_LIMIT:
+            self._global_auth_lockout_until = now + _AUTH_LOCKOUT_SECONDS
 
     def _clear_auth_state(self, user_id: str) -> None:
         self._failed_auth_attempts.pop(user_id, None)
         self._auth_lockouts.pop(user_id, None)
+
+    def _clear_global_auth_state(self) -> None:
+        self._global_failed_auth_attempts.clear()
+        self._global_auth_lockout_until = None
+
+    def _prune_global_auth_failures(self, now: float | None = None) -> None:
+        cutoff = float(now if now is not None else time.monotonic()) - _AUTH_LOCKOUT_SECONDS
+        while self._global_failed_auth_attempts:
+            if self._global_failed_auth_attempts[0] >= cutoff:
+                return
+            self._global_failed_auth_attempts.popleft()
 
     async def _invoke_and_reply(
         self,

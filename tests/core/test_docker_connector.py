@@ -579,3 +579,104 @@ async def test_pool_client_creation_timeout_closes_leaked_client() -> None:
     assert len(leaked) == 1, "thread should have created exactly one client"
     assert leaked[0].closed is True, "leaked client must be closed after timeout"
     await pool.close_all()
+
+
+def test_exec_container_operation_wraps_command_with_shell_timeout_guard() -> None:
+    captured: list[Any] = []
+
+    class _ExecContainer:
+        name = "api"
+
+        def exec_run(self, command: Any, demux: bool = True):
+            captured.append({"command": command, "demux": demux})
+            return 0, (b"ok", b"")
+
+    class _Containers:
+        def get(self, _container_id: str):
+            return _ExecContainer()
+
+    class _Client:
+        containers = _Containers()
+
+    operation = docker_connector._exec_container_operation(
+        "c1",
+        command="echo hello",
+        timeout_seconds=12,
+    )
+    result = operation(_Client())
+
+    assert result["exit_code"] == 0
+    assert captured == [
+        {
+            "command": [
+                "/bin/sh",
+                "-lc",
+                'cmd="$1"; timeout="$2"; /bin/sh -lc "$cmd" & pid=$!; ( sleep "$timeout"; kill -TERM "$pid" 2>/dev/null; sleep 1; kill -KILL "$pid" 2>/dev/null ) & killer=$!; wait "$pid"; status=$?; kill "$killer" 2>/dev/null || true; wait "$killer" 2>/dev/null || true; if [ "$status" -eq 143 ] || [ "$status" -eq 137 ]; then exit 124; fi; exit "$status"',
+                "logdog-exec",
+                "echo hello",
+                "12",
+            ],
+            "demux": True,
+        }
+    ]
+
+
+def test_exec_container_operation_rejects_non_positive_timeout() -> None:
+    with pytest.raises(ValueError, match="timeout_seconds"):
+        docker_connector._exec_container_operation(
+            "c1",
+            command="echo hello",
+            timeout_seconds=0,
+        )
+
+
+def test_exec_container_operation_raises_clear_error_when_shell_missing() -> None:
+    class _ExecContainer:
+        name = "api"
+
+        def exec_run(self, command: Any, demux: bool = True):
+            _ = command
+            _ = demux
+            return 127, (b"", b"/bin/sh: not found")
+
+    class _Containers:
+        def get(self, _container_id: str):
+            return _ExecContainer()
+
+    class _Client:
+        containers = _Containers()
+
+    operation = docker_connector._exec_container_operation(
+        "c1",
+        command="echo hello",
+        timeout_seconds=12,
+    )
+
+    with pytest.raises(RuntimeError, match="requires /bin/sh"):
+        operation(_Client())
+
+
+def test_exec_container_operation_raises_clear_error_when_sleep_missing() -> None:
+    class _ExecContainer:
+        name = "api"
+
+        def exec_run(self, command: Any, demux: bool = True):
+            _ = command
+            _ = demux
+            return 127, (b"", b"/bin/sh: 1: sleep: not found")
+
+    class _Containers:
+        def get(self, _container_id: str):
+            return _ExecContainer()
+
+    class _Client:
+        containers = _Containers()
+
+    operation = docker_connector._exec_container_operation(
+        "c1",
+        command="echo hello",
+        timeout_seconds=12,
+    )
+
+    with pytest.raises(RuntimeError, match="requires /bin/sh and sleep"):
+        operation(_Client())

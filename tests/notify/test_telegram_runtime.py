@@ -392,6 +392,109 @@ async def test_telegram_runtime_temporarily_locks_user_after_repeated_failed_aut
 
 
 @pytest.mark.asyncio
+async def test_telegram_runtime_globally_locks_pairing_after_repeated_failures_across_users(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    application = _FakeApplication(events)
+    chat_runtime = _RecordingChatRuntime()
+    clock = {"now": 200.0}
+
+    monkeypatch.setattr(
+        "logdog.notify.telegram.time.monotonic",
+        lambda: clock["now"],
+    )
+
+    runtime = build_telegram_bot_runtime(
+        bot_token="token",
+        chat_runtime=chat_runtime,
+        authorized_user_ids=set(),
+        pairing_code="123123",
+        application_factory=lambda _token: application,
+        handler_binder=lambda app, handler: app.add_handler(handler),
+    )
+
+    assert runtime is not None
+    await runtime.start()
+    handler = application.handlers[0]
+
+    for idx in range(5):
+        failed_update = _FakeUpdate(
+            user_id=100 + idx,
+            chat_id=9000 + idx,
+            text="/auth bad-code",
+        )
+        await handler(failed_update, None)
+        assert failed_update.effective_message.replies
+        assert "failed" in failed_update.effective_message.replies[0].lower()
+
+    locked_update = _FakeUpdate(user_id=999, chat_id=9999, text="/auth 123123")
+    await handler(locked_update, None)
+
+    assert locked_update.effective_message.replies
+    assert "locked" in locked_update.effective_message.replies[0].lower()
+    assert chat_runtime.calls == []
+
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_telegram_runtime_global_failed_attempts_expire_with_time_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    application = _FakeApplication(events)
+    chat_runtime = _RecordingChatRuntime()
+    persisted: list[str] = []
+    clock = {"now": 500.0}
+
+    monkeypatch.setattr(
+        "logdog.notify.telegram.time.monotonic",
+        lambda: clock["now"],
+    )
+
+    runtime = build_telegram_bot_runtime(
+        bot_token="token",
+        chat_runtime=chat_runtime,
+        authorized_user_ids=set(),
+        pairing_code="123123",
+        application_factory=lambda _token: application,
+        handler_binder=lambda app, handler: app.add_handler(handler),
+    )
+
+    assert runtime is not None
+    runtime.set_authorized_user_persist_callback(persisted.append)
+    await runtime.start()
+    handler = application.handlers[0]
+
+    for idx in range(4):
+        failed_update = _FakeUpdate(
+            user_id=100 + idx,
+            chat_id=9000 + idx,
+            text="/auth bad-code",
+        )
+        await handler(failed_update, None)
+        assert failed_update.effective_message.replies
+        assert "failed" in failed_update.effective_message.replies[0].lower()
+
+    clock["now"] = 700.0
+
+    failed_update = _FakeUpdate(user_id=999, chat_id=9999, text="/auth bad-code")
+    await handler(failed_update, None)
+    assert failed_update.effective_message.replies
+    assert "failed" in failed_update.effective_message.replies[0].lower()
+
+    success_update = _FakeUpdate(user_id=999, chat_id=9999, text="/auth 123123")
+    await handler(success_update, None)
+
+    assert success_update.effective_message.replies
+    assert "authorized" in success_update.effective_message.replies[0].lower()
+    assert persisted == ["999"]
+
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_telegram_runtime_rejects_invalid_auth_command_with_hint() -> None:
     events: list[str] = []
     application = _FakeApplication(events)

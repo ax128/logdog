@@ -42,6 +42,10 @@ class AlertStormController:
         self._recent_by_category: dict[str, list[dict[str, Any]]] = {}
         self._active_by_category: dict[str, _StormSession] = {}
 
+    def reset(self) -> None:
+        self._recent_by_category.clear()
+        self._active_by_category.clear()
+
     def flush_due(self, now: float) -> list[dict[str, Any]]:
         if not self.enabled:
             return []

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import json
 from pathlib import Path
 from textwrap import dedent
 
@@ -265,7 +266,7 @@ def test_build_telegram_runtime_prefers_explicit_authorized_users_over_persisted
     assert runtime._authorized_user_ids == {"cfg-user"}
 
 
-def test_build_telegram_runtime_uses_persisted_users_when_config_list_empty(
+def test_build_telegram_runtime_clears_persisted_users_when_config_list_empty(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class _FakeRuntime:
@@ -311,8 +312,102 @@ def test_build_telegram_runtime_uses_persisted_users_when_config_list_empty(
     )
 
     assert runtime is not None
-    assert runtime._authorized_user_ids == {"persisted-user"}
+    assert runtime._authorized_user_ids == set()
     assert runtime._pairing_code == "123123"
+
+
+def test_build_telegram_runtime_rejects_null_telegram_authorized_users() -> None:
+    with pytest.raises(TypeError, match="must be a list"):
+        main_module._build_telegram_runtime_from_config(
+            app_config={
+                "agent": {
+                    "authorized_users": {
+                        "telegram": None,
+                        "telegram_pairing_code": "123123",
+                    }
+                }
+            },
+            chat_runtime=None,
+        )
+
+
+def test_build_telegram_runtime_clears_persisted_users_file_when_config_list_empty(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _FakeRuntime:
+        def __init__(
+            self,
+            authorized_user_ids: set[str],
+            pairing_code: str | None,
+        ) -> None:
+            self._authorized_user_ids = set(authorized_user_ids)
+            self._pairing_code = pairing_code
+
+        def set_authorized_user_persist_callback(self, _callback) -> None:
+            return None
+
+        def set_sender(self, _sender) -> None:
+            return None
+
+    state_path = tmp_path / "logdog_authorized.json"
+    state_path.write_text('{"telegram": ["persisted-user"]}', encoding="utf-8")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "telegram-token")
+    monkeypatch.setattr(main_module, "_AUTHORIZED_USERS_STATE_FILE", str(state_path))
+
+    def build_runtime(**kwargs):
+        return _FakeRuntime(
+            set(kwargs["authorized_user_ids"]),
+            kwargs.get("pairing_code"),
+        )
+
+    monkeypatch.setattr(main_module, "build_telegram_bot_runtime", build_runtime)
+
+    runtime = main_module._build_telegram_runtime_from_config(
+        app_config={
+            "agent": {
+                "authorized_users": {
+                    "telegram": [],
+                    "telegram_pairing_code": "123123",
+                }
+            }
+        },
+        chat_runtime=None,
+    )
+
+    assert runtime is not None
+    assert runtime._authorized_user_ids == set()
+    assert main_module._load_persisted_authorized_users() == set()
+    assert json.loads(state_path.read_text(encoding="utf-8")) == {"telegram": []}
+
+
+def test_chat_id_cache_is_scoped_by_authorized_telegram_users(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cache_path = tmp_path / "logdog_chat_id.json"
+    monkeypatch.setattr(main_module, "_CHAT_ID_CACHE_FILE", str(cache_path))
+
+    main_module._persist_chat_id(
+        "telegram-token",
+        "chat-old",
+        authorized_user_ids={"user-old"},
+    )
+
+    assert (
+        main_module._load_cached_chat_id(
+            "telegram-token",
+            authorized_user_ids={"user-old"},
+        )
+        == "chat-old"
+    )
+    assert (
+        main_module._load_cached_chat_id(
+            "telegram-token",
+            authorized_user_ids={"user-new"},
+        )
+        is None
+    )
 
 
 @pytest.mark.asyncio
@@ -635,8 +730,16 @@ async def test_main_app_reload_rebinds_telegram_chat_id_sync_to_new_router(
 
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "telegram-token")
     monkeypatch.setattr(main_module, "_load_persisted_authorized_users", lambda: set())
-    monkeypatch.setattr(main_module, "_load_cached_chat_id", lambda _token: None)
-    monkeypatch.setattr(main_module, "_persist_chat_id", lambda *_args: None)
+    monkeypatch.setattr(
+        main_module,
+        "_load_cached_chat_id",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        main_module,
+        "_persist_chat_id",
+        lambda *_args, **_kwargs: None,
+    )
     monkeypatch.setattr(main_module, "_resolve_notify_router", build_router)
     monkeypatch.setattr(
         main_module,

@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 
+from logdog.llm.permissions import issue_approval_token
 from logdog.llm.tool_types import ToolResult
 from logdog.llm.tools import create_tool_registry
 
@@ -100,7 +101,10 @@ def _make_registry(
     containers = [{"id": "c1", "name": "api", "status": "running", "restart_count": 0}]
     cfg: dict[str, Any] = {"llm": {}}
     if allow_exec_host:
-        cfg["llm"]["permissions"] = {"dangerous_host_allowlist": ["prod-a"]}
+        cfg["llm"]["permissions"] = {
+            "dangerous_host_allowlist": ["prod-a"],
+            "approval_secret": "test-secret",
+        }
 
     return create_tool_registry(
         host_manager=_HostManagerStub(),
@@ -297,24 +301,23 @@ async def test_get_storm_events_is_read_only() -> None:
 
 
 @pytest.mark.asyncio
-async def test_exec_container_requires_confirmation() -> None:
-    """exec_container is a dangerous tool; invoking without confirmed=True raises PermissionError."""
+async def test_exec_container_requires_approval_token() -> None:
+    """exec_container is a dangerous tool; invoking without approval_token raises PermissionError."""
     registry = _make_registry()
 
-    with pytest.raises(PermissionError, match="confirmation"):
+    with pytest.raises(PermissionError, match="approval token"):
         await registry["exec_container"].invoke(
             user_id="alice",
             arguments={
                 "host": "prod-a",
                 "container_id": "c1",
                 "command": "echo hello",
-                "confirmed": False,
             },
         )
 
 
 @pytest.mark.asyncio
-async def test_exec_container_runs_command_when_confirmed() -> None:
+async def test_exec_container_runs_command_when_approved() -> None:
     exec_calls: list[dict[str, Any]] = []
 
     async def exec_fn(
@@ -330,15 +333,22 @@ async def test_exec_container_runs_command_when_confirmed() -> None:
         }
 
     registry = _make_registry(exec_fn=exec_fn)
+    arguments = {
+        "host": "prod-a",
+        "container_id": "c1",
+        "command": "echo hello",
+    }
+    arguments["approval_token"] = issue_approval_token(
+        "exec_container",
+        arguments,
+        secret="test-secret",
+        issued_at=2_000_000_000,
+        ttl_seconds=300,
+    )
 
     result = await registry["exec_container"].invoke(
         user_id="alice",
-        arguments={
-            "host": "prod-a",
-            "container_id": "c1",
-            "command": "echo hello",
-            "confirmed": True,
-        },
+        arguments=arguments,
     )
 
     assert isinstance(result, ToolResult)
@@ -363,7 +373,6 @@ async def test_exec_container_denied_when_host_not_allowlisted() -> None:
                 "host": "prod-a",
                 "container_id": "c1",
                 "command": "ls",
-                "confirmed": True,
             },
         )
 
@@ -371,16 +380,256 @@ async def test_exec_container_denied_when_host_not_allowlisted() -> None:
 @pytest.mark.asyncio
 async def test_exec_container_requires_command() -> None:
     registry = _make_registry()
+    arguments = {
+        "host": "prod-a",
+        "container_id": "c1",
+        "command": "",
+    }
+    arguments["approval_token"] = issue_approval_token(
+        "exec_container",
+        arguments,
+        secret="test-secret",
+        issued_at=2_000_000_000,
+        ttl_seconds=300,
+    )
 
     with pytest.raises(ValueError, match="command"):
         await registry["exec_container"].invoke(
             user_id="alice",
-            arguments={
-                "host": "prod-a",
-                "container_id": "c1",
-                "command": "",
-                "confirmed": True,
-            },
+            arguments=arguments,
+        )
+
+
+@pytest.mark.asyncio
+async def test_exec_container_passes_timeout_seconds_to_exec_fn() -> None:
+    exec_calls: list[dict[str, Any]] = []
+
+    async def exec_fn(
+        host: dict[str, Any],
+        container: dict[str, Any],
+        *,
+        command: str,
+        timeout_seconds: int,
+    ) -> dict[str, Any]:
+        exec_calls.append(
+            {
+                "host": host["name"],
+                "container_id": container["id"],
+                "command": command,
+                "timeout_seconds": timeout_seconds,
+            }
+        )
+        return {
+            "container_id": container["id"],
+            "container_name": "api",
+            "command": command,
+            "exit_code": 0,
+            "output": "hello",
+        }
+
+    registry = _make_registry(exec_fn=exec_fn)
+    arguments = {
+        "host": "prod-a",
+        "container_id": "c1",
+        "command": "echo hello",
+        "timeout_seconds": 12,
+    }
+    arguments["approval_token"] = issue_approval_token(
+        "exec_container",
+        arguments,
+        secret="test-secret",
+        issued_at=2_000_000_000,
+        ttl_seconds=300,
+    )
+
+    result = await registry["exec_container"].invoke(
+        user_id="alice",
+        arguments=arguments,
+    )
+
+    assert isinstance(result, ToolResult)
+    assert exec_calls == [
+        {
+            "host": "prod-a",
+            "container_id": "c1",
+            "command": "echo hello",
+            "timeout_seconds": 12,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_exec_container_uses_default_timeout_seconds_when_omitted() -> None:
+    exec_calls: list[dict[str, Any]] = []
+
+    async def exec_fn(
+        host: dict[str, Any],
+        container: dict[str, Any],
+        *,
+        command: str,
+        timeout_seconds: int,
+    ) -> dict[str, Any]:
+        exec_calls.append(
+            {
+                "host": host["name"],
+                "container_id": container["id"],
+                "command": command,
+                "timeout_seconds": timeout_seconds,
+            }
+        )
+        return {
+            "container_id": container["id"],
+            "container_name": "api",
+            "command": command,
+            "exit_code": 0,
+            "output": "hello",
+        }
+
+    registry = _make_registry(exec_fn=exec_fn)
+    arguments = {
+        "host": "prod-a",
+        "container_id": "c1",
+        "command": "echo hello",
+    }
+    arguments["approval_token"] = issue_approval_token(
+        "exec_container",
+        arguments,
+        secret="test-secret",
+        issued_at=2_000_000_000,
+        ttl_seconds=300,
+    )
+
+    await registry["exec_container"].invoke(
+        user_id="alice",
+        arguments=arguments,
+    )
+
+    assert exec_calls == [
+        {
+            "host": "prod-a",
+            "container_id": "c1",
+            "command": "echo hello",
+            "timeout_seconds": 30,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_exec_container_rejects_timeout_seconds_above_limit() -> None:
+    registry = _make_registry()
+    arguments = {
+        "host": "prod-a",
+        "container_id": "c1",
+        "command": "echo hello",
+        "timeout_seconds": 301,
+    }
+    arguments["approval_token"] = issue_approval_token(
+        "exec_container",
+        arguments,
+        secret="test-secret",
+        issued_at=2_000_000_000,
+        ttl_seconds=300,
+    )
+
+    with pytest.raises(ValueError, match="timeout_seconds"):
+        await registry["exec_container"].invoke(
+            user_id="alice",
+            arguments=arguments,
+        )
+
+
+@pytest.mark.asyncio
+async def test_exec_container_rejects_non_positive_timeout_seconds() -> None:
+    registry = _make_registry()
+    arguments = {
+        "host": "prod-a",
+        "container_id": "c1",
+        "command": "echo hello",
+        "timeout_seconds": 0,
+    }
+    arguments["approval_token"] = issue_approval_token(
+        "exec_container",
+        arguments,
+        secret="test-secret",
+        issued_at=2_000_000_000,
+        ttl_seconds=300,
+    )
+
+    with pytest.raises(ValueError, match="value must be > 0"):
+        await registry["exec_container"].invoke(
+            user_id="alice",
+            arguments=arguments,
+        )
+
+
+@pytest.mark.asyncio
+async def test_exec_container_rejects_overlong_command() -> None:
+    registry = _make_registry()
+    command = "x" * 1001
+    arguments = {
+        "host": "prod-a",
+        "container_id": "c1",
+        "command": command,
+    }
+    arguments["approval_token"] = issue_approval_token(
+        "exec_container",
+        arguments,
+        secret="test-secret",
+        issued_at=2_000_000_000,
+        ttl_seconds=300,
+    )
+
+    with pytest.raises(ValueError, match="command"):
+        await registry["exec_container"].invoke(
+            user_id="alice",
+            arguments=arguments,
+        )
+
+
+@pytest.mark.asyncio
+async def test_exec_container_rejects_expired_approval_token() -> None:
+    registry = _make_registry()
+    arguments = {
+        "host": "prod-a",
+        "container_id": "c1",
+        "command": "echo hello",
+    }
+    arguments["approval_token"] = issue_approval_token(
+        "exec_container",
+        arguments,
+        secret="test-secret",
+        issued_at=100,
+        ttl_seconds=1,
+    )
+
+    with pytest.raises(PermissionError, match="approval token"):
+        await registry["exec_container"].invoke(
+            user_id="alice",
+            arguments=arguments,
+        )
+
+
+@pytest.mark.asyncio
+async def test_exec_container_rejects_tampered_approval_token() -> None:
+    registry = _make_registry()
+    arguments = {
+        "host": "prod-a",
+        "container_id": "c1",
+        "command": "echo hello",
+    }
+    arguments["approval_token"] = issue_approval_token(
+        "exec_container",
+        arguments,
+        secret="test-secret",
+        issued_at=2_000_000_000,
+        ttl_seconds=300,
+    )
+    arguments["command"] = "echo tampered"
+
+    with pytest.raises(PermissionError, match="approval token"):
+        await registry["exec_container"].invoke(
+            user_id="alice",
+            arguments=arguments,
         )
 
 

@@ -115,13 +115,23 @@ def _format_ts(ts: float) -> str:
     return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
 
 
-def _mark_dedup_task_done(key: tuple[str, str, str]) -> None:
+def _mark_dedup_task_done(
+    key: tuple[str, str, str], task: asyncio.Task[None] | None = None
+) -> None:
     with _DEDUP_LOCK:
+        current = _PENDING_DEDUP_TASKS.get(key)
+        if task is not None and current is not task:
+            return
         _PENDING_DEDUP_TASKS.pop(key, None)
 
 
-def _mark_storm_task_done(key: tuple[int, str]) -> None:
+def _mark_storm_task_done(
+    key: tuple[int, str], task: asyncio.Task[None] | None = None
+) -> None:
     with _STORM_TASK_LOCK:
+        current = _PENDING_STORM_END_TASKS.get(key)
+        if task is not None and current is not task:
+            return
         _PENDING_STORM_END_TASKS.pop(key, None)
 
 
@@ -188,7 +198,7 @@ def _schedule_dedup_summary(
             key=key, delay=delay, window_seconds=window_seconds
         )
     )
-    task.add_done_callback(lambda _: _mark_dedup_task_done(key))
+    task.add_done_callback(lambda done_task: _mark_dedup_task_done(key, done_task))
     with _DEDUP_LOCK:
         _PENDING_DEDUP_TASKS[key] = task
 
@@ -693,6 +703,7 @@ class LogStreamWatcher:
         )
         self._worker_tasks: list[asyncio.Task[None]] = []
         self._dropped_events = 0
+        self._shutting_down = False
 
     @property
     def dropped_events(self) -> int:
@@ -736,6 +747,7 @@ class LogStreamWatcher:
             await asyncio.gather(task, return_exceptions=True)
 
     async def shutdown(self) -> None:
+        self._shutting_down = True
         tasks = list(self._container_tasks.values())
         self._container_tasks.clear()
         for task in tasks:
@@ -743,6 +755,14 @@ class LogStreamWatcher:
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         await self._stop_workers()
+        host_name = str(self._host.get("name") or "").strip()
+        if host_name != "":
+            await cancel_pending_dedup_tasks_for_host(host_name)
+        if self._storm_controller is not None:
+            await cancel_pending_storm_tasks_for_controller(
+                self._storm_controller,
+                reset_state=True,
+            )
 
     async def watch_container(self, container: dict[str, Any]) -> None:
         await self._ensure_workers()
@@ -1002,6 +1022,8 @@ class LogStreamWatcher:
             self._worker_tasks.append(asyncio.create_task(self._alert_worker(idx)))
 
     async def _enqueue_alert_item(self, item: _AlertItem) -> None:
+        if self._shutting_down:
+            return
         try:
             self._queue.put_nowait(item)
         except asyncio.QueueFull:
@@ -1068,7 +1090,7 @@ def _schedule_storm_end_flush(
         _PENDING_STORM_END_TASKS[key] = task
     if previous is not None and not previous.done():
         previous.cancel()
-    task.add_done_callback(lambda _: _mark_storm_task_done(key))
+    task.add_done_callback(lambda done_task: _mark_storm_task_done(key, done_task))
 
 
 async def _flush_storm_end_after_delay(
@@ -1080,6 +1102,7 @@ async def _flush_storm_end_after_delay(
     save_impl: Any,
     save_storm_event_impl: Any,
 ) -> None:
+    current_task = asyncio.current_task()
     try:
         await asyncio.sleep(max(0.0, delay))
         await _emit_storm_due_messages(
@@ -1092,7 +1115,7 @@ async def _flush_storm_end_after_delay(
     except asyncio.CancelledError:
         return
     finally:
-        _mark_storm_task_done(key)
+        _mark_storm_task_done(key, current_task)
 
 
 async def _emit_storm_due_messages(
@@ -1196,6 +1219,48 @@ async def cancel_pending_dedup_tasks() -> None:
         await asyncio.gather(*tasks, return_exceptions=True)
     if storm_tasks:
         await asyncio.gather(*storm_tasks, return_exceptions=True)
+
+
+async def cancel_pending_dedup_tasks_for_host(host: str) -> None:
+    normalized_host = str(host or "").strip()
+    if normalized_host == "":
+        return
+    with _DEDUP_LOCK:
+        dedup_keys = [
+            key for key in _PENDING_DEDUP_TASKS if key[0] == normalized_host
+        ]
+        tasks = [_PENDING_DEDUP_TASKS.pop(key) for key in dedup_keys]
+        for key in dedup_keys:
+            _PENDING_DEDUP.pop(key, None)
+    for task in tasks:
+        task.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+async def cancel_pending_storm_tasks_for_controller(
+    storm_controller: Any,
+    *,
+    reset_state: bool = False,
+) -> None:
+    if storm_controller is None:
+        return
+    controller_id = id(storm_controller)
+    with _STORM_TASK_LOCK:
+        storm_keys = [
+            key
+            for key in _PENDING_STORM_END_TASKS
+            if key[0] == controller_id
+        ]
+        tasks = [_PENDING_STORM_END_TASKS.pop(key) for key in storm_keys]
+    for task in tasks:
+        task.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+    if reset_state:
+        reset = getattr(storm_controller, "reset", None)
+        if callable(reset):
+            reset()
 
 
 async def reset_alert_runtime_state_for_tests() -> None:

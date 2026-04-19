@@ -79,15 +79,15 @@ TOOL_METAS: dict[str, dict[str, Any]] = {
     },
     "restart_container": {
         "name": "restart_container",
-        "description": "Restart a container on an allowlisted host. Requires confirmed=true.",
+        "description": "Restart a container on an allowlisted host. Requires approval_token.",
         "read_only": False,
         "parameters": {
             "host": {"type": "string", "description": "Host name, e.g. 'local' or 'prod'", "required": True},
             "container_id": {"type": "string", "description": "Container name or id", "required": True},
             "timeout": {"type": "integer", "description": "Restart timeout seconds", "required": False, "default": 10},
-            "confirmed": {
-                "type": "boolean",
-                "description": "Must be true to confirm restart execution",
+            "approval_token": {
+                "type": "string",
+                "description": "Server-issued approval token authorizing this exact restart",
                 "required": True,
             },
         },
@@ -144,7 +144,7 @@ TOOL_METAS: dict[str, dict[str, Any]] = {
     },
     "exec_container": {
         "name": "exec_container",
-        "description": "Execute a command inside a container. Requires confirmed=true.",
+        "description": "Execute a command inside a container. Requires approval_token.",
         "read_only": False,
         "parameters": {
             "host": {
@@ -159,12 +159,18 @@ TOOL_METAS: dict[str, dict[str, Any]] = {
             },
             "command": {
                 "type": "string",
-                "description": "Command to run inside the container",
+                "description": "Command to run inside the container (max 1000 chars)",
                 "required": True,
             },
-            "confirmed": {
-                "type": "boolean",
-                "description": "Must be true to confirm command execution",
+            "timeout_seconds": {
+                "type": "integer",
+                "description": "Execution timeout in seconds (default 30, max 300)",
+                "required": False,
+                "default": 30,
+            },
+            "approval_token": {
+                "type": "string",
+                "description": "Server-issued approval token authorizing this exact command",
                 "required": True,
             },
         },

@@ -122,7 +122,9 @@ def apply_rules(line: str, config: dict) -> RuleResult:
                 triggered=True, redacted_line=redacted, matched_category=category
             )
 
-    ak = config.get("alert_keywords")
+    ak = rules.get("alert_keywords")
+    if ak is None:
+        ak = config.get("alert_keywords")
     if ak is None:
         keywords: Iterable[str] = _DEFAULT_KEYWORDS
     elif isinstance(ak, str):

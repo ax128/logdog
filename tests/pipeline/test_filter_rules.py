@@ -51,6 +51,15 @@ def test_system_keyword_fallback_hit():
     assert result.matched_category == "ERROR"
 
 
+def test_alert_keywords_under_rules_are_used_for_matching():
+    cfg = sample_config()
+    cfg.pop("alert_keywords")
+    cfg["rules"]["alert_keywords"] = ["5xx"]
+    result = apply_rules("5xx upstream broken", config=cfg)
+    assert result.triggered is True
+    assert result.matched_category == "ERROR"
+
+
 def test_alert_keywords_must_not_be_str():
     cfg = sample_config()
     cfg["alert_keywords"] = "ERROR"

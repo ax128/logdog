@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import random as _random_module
 
 import pytest
 
@@ -330,20 +329,25 @@ async def test_run_alert_once_reports_unsaved_when_storm_start_save_fails() -> N
         threshold=1,
         suppress_minutes=1,
     )
+    cooldown_store = CooldownStore()
 
-    result = await run_alert_once(
-        "ERROR storm save fail event",
-        host="host-a",
-        container_id="c1",
-        container_name="svc-api",
-        notifier_send=notify,
-        save_alert=save_alert,
-        storm_controller=storm_controller,
-        config={"dedup": {"enabled": False}},
-    )
+    try:
+        result = await run_alert_once(
+            "ERROR storm save fail event",
+            host="host-a",
+            container_id="c1",
+            container_name="svc-api",
+            cooldown_store=cooldown_store,
+            notifier_send=notify,
+            save_alert=save_alert,
+            storm_controller=storm_controller,
+            config={"dedup": {"enabled": False}},
+        )
 
-    assert result.triggered is True
-    assert result.saved is False
+        assert result.triggered is True
+        assert result.saved is False
+    finally:
+        await log_stream_module.cancel_pending_dedup_tasks()
 
 
 @pytest.mark.asyncio
@@ -394,6 +398,303 @@ async def test_run_alert_once_does_not_emit_dedup_summary_for_muted_events() -> 
     assert second.triggered is True
     assert notifications == []
     assert saved_payloads == []
+
+
+@pytest.mark.asyncio
+async def test_log_stream_watcher_shutdown_cancels_pending_dedup_for_its_host() -> None:
+    async def _notify(_host: str, _message: str, _category: str) -> bool:
+        return True
+
+    async def _save_alert(_payload: dict[str, object]) -> bool:
+        return True
+
+    first_store = CooldownStore(default_minutes=0.001)
+    await run_alert_once(
+        "ERROR first host-a",
+        host="host-a",
+        container_id="c1",
+        container_name="svc-a",
+        timestamp="2026-04-11T10:00:00Z",
+        cooldown_store=first_store,
+        notifier_send=_notify,
+        save_alert=_save_alert,
+        config={"llm": {"enabled": False}},
+    )
+    await run_alert_once(
+        "ERROR second host-a",
+        host="host-a",
+        container_id="c1",
+        container_name="svc-a",
+        timestamp="2026-04-11T10:00:01Z",
+        cooldown_store=first_store,
+        notifier_send=_notify,
+        save_alert=_save_alert,
+        config={"llm": {"enabled": False}},
+    )
+
+    second_store = CooldownStore(default_minutes=0.001)
+    await run_alert_once(
+        "ERROR first host-b",
+        host="host-b",
+        container_id="c2",
+        container_name="svc-b",
+        timestamp="2026-04-11T10:00:00Z",
+        cooldown_store=second_store,
+        notifier_send=_notify,
+        save_alert=_save_alert,
+        config={"llm": {"enabled": False}},
+    )
+    await run_alert_once(
+        "ERROR second host-b",
+        host="host-b",
+        container_id="c2",
+        container_name="svc-b",
+        timestamp="2026-04-11T10:00:01Z",
+        cooldown_store=second_store,
+        notifier_send=_notify,
+        save_alert=_save_alert,
+        config={"llm": {"enabled": False}},
+    )
+
+    watcher = LogStreamWatcher(
+        host={"name": "host-a", "url": "unix:///var/run/docker.sock"},
+        stream_logs=None,
+    )
+
+    assert any(key[0] == "host-a" for key in log_stream_module._PENDING_DEDUP_TASKS)
+    assert any(key[0] == "host-b" for key in log_stream_module._PENDING_DEDUP_TASKS)
+
+    try:
+        await watcher.shutdown()
+        assert not any(
+            key[0] == "host-a" for key in log_stream_module._PENDING_DEDUP_TASKS
+        )
+        assert any(
+            key[0] == "host-b" for key in log_stream_module._PENDING_DEDUP_TASKS
+        )
+    finally:
+        await log_stream_module.cancel_pending_dedup_tasks()
+
+
+@pytest.mark.asyncio
+async def test_log_stream_watcher_shutdown_cancels_pending_storm_tasks_for_its_controller() -> None:
+    async def _notify(_host: str, _message: str, _category: str) -> bool:
+        return True
+
+    async def _save_alert(_payload: dict[str, object]) -> bool:
+        return True
+
+    async def _save_storm_event(_payload: dict[str, object]) -> bool:
+        return True
+
+    storm_controller_a = AlertStormController(
+        enabled=True,
+        window_seconds=60,
+        threshold=1,
+        suppress_minutes=1,
+    )
+    storm_controller_b = AlertStormController(
+        enabled=True,
+        window_seconds=60,
+        threshold=1,
+        suppress_minutes=1,
+    )
+    cooldown_store = CooldownStore()
+
+    await run_alert_once(
+        "ERROR storm-a",
+        host="host-a",
+        container_id="c1",
+        container_name="svc-a",
+        timestamp="2026-04-11T10:00:00Z",
+        cooldown_store=cooldown_store,
+        notifier_send=_notify,
+        save_alert=_save_alert,
+        save_storm_event=_save_storm_event,
+        storm_controller=storm_controller_a,
+        config={"llm": {"enabled": False}},
+    )
+    await run_alert_once(
+        "ERROR storm-b",
+        host="host-b",
+        container_id="c2",
+        container_name="svc-b",
+        timestamp="2026-04-11T10:00:00Z",
+        cooldown_store=cooldown_store,
+        notifier_send=_notify,
+        save_alert=_save_alert,
+        save_storm_event=_save_storm_event,
+        storm_controller=storm_controller_b,
+        config={"llm": {"enabled": False}},
+    )
+
+    watcher = LogStreamWatcher(
+        host={"name": "host-a", "url": "unix:///var/run/docker.sock"},
+        stream_logs=None,
+        storm_controller=storm_controller_a,
+    )
+
+    key_a = (id(storm_controller_a), "ERROR")
+    key_b = (id(storm_controller_b), "ERROR")
+    assert key_a in log_stream_module._PENDING_STORM_END_TASKS
+    assert key_b in log_stream_module._PENDING_STORM_END_TASKS
+
+    try:
+        await watcher.shutdown()
+        assert key_a not in log_stream_module._PENDING_STORM_END_TASKS
+        assert key_b in log_stream_module._PENDING_STORM_END_TASKS
+    finally:
+        await log_stream_module.cancel_pending_dedup_tasks()
+
+
+@pytest.mark.asyncio
+async def test_log_stream_watcher_shutdown_does_not_leave_new_dedup_tasks_from_queued_items() -> None:
+    async def _notify(_host: str, _message: str, _category: str) -> bool:
+        return True
+
+    async def _save_alert(_payload: dict[str, object]) -> bool:
+        return True
+
+    cooldown_store = CooldownStore(default_minutes=0.001)
+    watcher = LogStreamWatcher(
+        host={"name": "host-a", "url": "unix:///var/run/docker.sock"},
+        stream_logs=None,
+        notifier_send=_notify,
+        save_alert=_save_alert,
+    )
+
+    await watcher._ensure_workers()
+    for idx in range(2):
+        await watcher._enqueue_alert_item(
+            log_stream_module._AlertItem(
+                line=f"ERROR queued dedup {idx}",
+                kwargs={
+                    "host": "host-a",
+                    "container_id": "c1",
+                    "container_name": "svc-a",
+                    "timestamp": f"2026-04-19T10:00:0{idx}Z",
+                    "cooldown_store": cooldown_store,
+                    "notifier_send": _notify,
+                    "save_alert": _save_alert,
+                    "save_storm_event": None,
+                    "mute_checker": None,
+                    "prompt_template": "default_alert",
+                    "output_template": "standard",
+                    "config": {"llm": {"enabled": False}},
+                },
+            )
+        )
+
+    try:
+        await watcher.shutdown()
+        assert not any(
+            key[0] == "host-a" for key in log_stream_module._PENDING_DEDUP_TASKS
+        )
+    finally:
+        await log_stream_module.cancel_pending_dedup_tasks()
+
+
+@pytest.mark.asyncio
+async def test_log_stream_watcher_shutdown_does_not_leave_new_storm_tasks_from_queued_items() -> None:
+    async def _notify(_host: str, _message: str, _category: str) -> bool:
+        return True
+
+    async def _save_alert(_payload: dict[str, object]) -> bool:
+        return True
+
+    async def _save_storm_event(_payload: dict[str, object]) -> bool:
+        return True
+
+    storm_controller = AlertStormController(
+        enabled=True,
+        window_seconds=60,
+        threshold=1,
+        suppress_minutes=1,
+    )
+    watcher = LogStreamWatcher(
+        host={"name": "host-a", "url": "unix:///var/run/docker.sock"},
+        stream_logs=None,
+        notifier_send=_notify,
+        save_alert=_save_alert,
+        storm_controller=storm_controller,
+    )
+
+    await watcher._ensure_workers()
+    await watcher._enqueue_alert_item(
+        log_stream_module._AlertItem(
+            line="ERROR queued storm",
+            kwargs={
+                "host": "host-a",
+                "container_id": "c1",
+                "container_name": "svc-a",
+                "timestamp": "2026-04-19T10:00:00Z",
+                "cooldown_store": CooldownStore(),
+                "notifier_send": _notify,
+                "save_alert": _save_alert,
+                "save_storm_event": _save_storm_event,
+                "mute_checker": None,
+                "prompt_template": "default_alert",
+                "output_template": "standard",
+                "config": {"llm": {"enabled": False}},
+                "storm_controller": storm_controller,
+            },
+        )
+    )
+
+    try:
+        await watcher.shutdown()
+        assert not any(
+            key[0] == id(storm_controller)
+            for key in log_stream_module._PENDING_STORM_END_TASKS
+        )
+        assert storm_controller._active_by_category == {}
+        assert storm_controller._recent_by_category == {}
+    finally:
+        await log_stream_module.cancel_pending_dedup_tasks()
+
+
+@pytest.mark.asyncio
+async def test_mark_dedup_task_done_ignores_stale_task_for_same_key() -> None:
+    key = ("host-a", "c1", "ERROR")
+    stale_task = asyncio.create_task(asyncio.sleep(0))
+    replacement_task = asyncio.create_task(asyncio.sleep(3600))
+
+    try:
+        await stale_task
+        with log_stream_module._DEDUP_LOCK:
+            log_stream_module._PENDING_DEDUP_TASKS[key] = replacement_task
+
+        log_stream_module._mark_dedup_task_done(key, stale_task)
+        assert log_stream_module._PENDING_DEDUP_TASKS[key] is replacement_task
+
+        log_stream_module._mark_dedup_task_done(key, replacement_task)
+        assert key not in log_stream_module._PENDING_DEDUP_TASKS
+    finally:
+        replacement_task.cancel()
+        await asyncio.gather(replacement_task, return_exceptions=True)
+        await log_stream_module.cancel_pending_dedup_tasks()
+
+
+@pytest.mark.asyncio
+async def test_mark_storm_task_done_ignores_stale_task_for_same_key() -> None:
+    key = (12345, "ERROR")
+    stale_task = asyncio.create_task(asyncio.sleep(0))
+    replacement_task = asyncio.create_task(asyncio.sleep(3600))
+
+    try:
+        await stale_task
+        with log_stream_module._STORM_TASK_LOCK:
+            log_stream_module._PENDING_STORM_END_TASKS[key] = replacement_task
+
+        log_stream_module._mark_storm_task_done(key, stale_task)
+        assert log_stream_module._PENDING_STORM_END_TASKS[key] is replacement_task
+
+        log_stream_module._mark_storm_task_done(key, replacement_task)
+        assert key not in log_stream_module._PENDING_STORM_END_TASKS
+    finally:
+        replacement_task.cancel()
+        await asyncio.gather(replacement_task, return_exceptions=True)
+        await log_stream_module.cancel_pending_dedup_tasks()
 
 
 @pytest.mark.asyncio

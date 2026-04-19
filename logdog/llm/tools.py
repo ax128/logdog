@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -20,7 +21,11 @@ from logdog.core.docker_connector import (
     query_container_logs,
     restart_container_for_host,
 )
-from logdog.llm.permissions import ensure_tool_allowed, has_explicit_confirmation, load_permission_policy
+from logdog.llm.permissions import (
+    ensure_tool_allowed,
+    has_valid_approval_token,
+    load_permission_policy,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -40,6 +45,11 @@ MAX_TOOL_METRICS_LIMIT = 20_000
 MAX_TOOL_ALERTS_LIMIT = 2_000
 MAX_MUTE_HOURS = 24 * 30
 MAX_RESTART_TIMEOUT_SECONDS = 120
+MAX_EXEC_TIMEOUT_SECONDS = 300
+MAX_EXEC_COMMAND_CHARS = 1000
+_AUDIT_REDACT_ARGUMENT_KEYS = frozenset(
+    {"approval_token", "confirmed", "confirmation"}
+)
 
 
 def validate_query_logs_args(hours: int, max_hours: int = 24) -> int:
@@ -146,6 +156,17 @@ class RateLimiter:
 
 class ToolRateLimitError(RuntimeError):
     pass
+
+
+def _sanitize_tool_arguments_for_audit(arguments: dict[str, Any] | None) -> dict[str, Any]:
+    normalized_arguments = dict(arguments or {})
+    sanitized: dict[str, Any] = {}
+    for key, value in normalized_arguments.items():
+        if str(key) in _AUDIT_REDACT_ARGUMENT_KEYS:
+            sanitized[str(key)] = "***REDACTED***"
+            continue
+        sanitized[str(key)] = value
+    return sanitized
 
 
 @dataclass(slots=True)
@@ -361,10 +382,15 @@ def create_tool_registry(
         container: dict[str, Any],
         *,
         command: str,
+        timeout_seconds: int,
     ) -> dict[str, Any]:
         if exec_container_fn is not None:
+            exec_kwargs: dict[str, Any] = {"command": command}
+            signature = inspect.signature(exec_container_fn)
+            if "timeout_seconds" in signature.parameters:
+                exec_kwargs["timeout_seconds"] = timeout_seconds
             return dict(
-                await _maybe_await(exec_container_fn(host, container, command=command))
+                await _maybe_await(exec_container_fn(host, container, **exec_kwargs))
             )
         if docker_client_pool is not None and callable(
             getattr(docker_client_pool, "exec_container_for_host", None)
@@ -372,12 +398,22 @@ def create_tool_registry(
             return dict(
                 await _maybe_await(
                     docker_client_pool.exec_container_for_host(
-                        host, container, command=command
+                        host,
+                        container,
+                        command=command,
+                        timeout_seconds=timeout_seconds,
                     )
                 )
             )
         return dict(
-            await _maybe_await(exec_container_for_host(host, container, command=command))
+            await _maybe_await(
+                exec_container_for_host(
+                    host,
+                    container,
+                    command=command,
+                    timeout_seconds=timeout_seconds,
+                )
+            )
         )
 
     async def list_mutes_op(writer: Any, *, limit: int) -> list[dict[str, Any]]:
@@ -430,15 +466,17 @@ def create_tool_registry(
             "tool": tool_name,
             "user_id": user_id,
             "read_only": read_only,
-            "arguments": dict(arguments),
+            "arguments": _sanitize_tool_arguments_for_audit(arguments),
         }
 
         try:
             writer = await resolve_writer()
         except Exception:
             logger.warning(
-                "tool audit fallback (writer unavailable): %s",
-                audit_payload,
+                "tool audit fallback (writer unavailable) tool=%s user_id=%s read_only=%s",
+                tool_name,
+                user_id,
+                read_only,
                 exc_info=True,
             )
             raise
@@ -627,8 +665,12 @@ def create_tool_registry(
     async def restart_container_handler(
         arguments: dict[str, Any], _writer: Any
     ) -> ToolResult:
-        if not has_explicit_confirmation(arguments, policy=permission_policy):
-            raise ValueError("confirmed must be True to execute restart")
+        if not has_valid_approval_token(
+            "restart_container",
+            arguments,
+            policy=permission_policy,
+        ):
+            raise ValueError("approval_token is required to execute restart")
         host = _require_host_config(host_manager, arguments)
         container_id = _require_non_empty_str(
             arguments.get("container_id"), field_name="container_id"
@@ -688,20 +730,36 @@ def create_tool_registry(
     async def exec_container_handler(
         arguments: dict[str, Any], _writer: Any
     ) -> ToolResult:
-        # Defence-in-depth: permission layer already checks confirmed, but we
-        # mirror its acceptance set (bool True or truthy string) so both layers
-        # agree on what counts as confirmed.
-        if not has_explicit_confirmation(arguments, policy=permission_policy):
-            raise ValueError("confirmed must be True to execute exec_container")
+        if not has_valid_approval_token(
+            "exec_container",
+            arguments,
+            policy=permission_policy,
+        ):
+            raise ValueError("approval_token is required to execute exec_container")
         host = _require_host_config(host_manager, arguments)
         container_id = _require_non_empty_str(
             arguments.get("container_id"), field_name="container_id"
         )
         command = _require_non_empty_str(arguments.get("command"), field_name="command")
+        if len(command) > MAX_EXEC_COMMAND_CHARS:
+            raise ValueError(
+                f"command must be <= {MAX_EXEC_COMMAND_CHARS} characters"
+            )
+        timeout_seconds = _coerce_bounded_int(
+            arguments.get("timeout_seconds"),
+            default=30,
+            max_value=MAX_EXEC_TIMEOUT_SECONDS,
+            field_name="timeout_seconds",
+        )
         container = await _resolve_container(
             host, container_id=container_id, list_containers_op=list_containers_op
         )
-        result = await exec_container_op(host, container, command=command)
+        result = await exec_container_op(
+            host,
+            container,
+            command=command,
+            timeout_seconds=timeout_seconds,
+        )
         return ToolResult.ok(json.dumps({"ok": True, "result": result}))
 
     return {
@@ -849,8 +907,9 @@ def create_tool_registry(
         "exec_container": AgentTool(
             name="exec_container",
             description=(
-                "Execute a command inside a container (dangerous, requires allowlisted host and confirmed=True). "
-                "Parameters: host (str), container_id (str), command (str), confirmed (bool)."
+                "Execute a command inside a container (dangerous, requires allowlisted host and approval_token). "
+                "Parameters: host (str), container_id (str), command (str, max 1000 chars), "
+                "timeout_seconds (int, default 30, max 300), approval_token (str)."
             ),
             read_only=False,
             _invoke=lambda user_id, arguments: guarded_invoke(

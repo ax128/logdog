@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from logdog.collector.log_stream import LogStreamWatcher
+from logdog.pipeline.filter import apply_rules
 
 
 def _make_watcher(host_config: dict) -> LogStreamWatcher:
@@ -111,6 +112,27 @@ class TestResolveContainerConfig:
         assert rules["alert_keywords"] == ["error", "5xx"]
         assert rules["ignore"] == ["healthcheck"]  # kept from host
         assert len(rules["redact"]) == 1  # kept from host
+
+    def test_container_override_alert_keywords_drive_matching(self) -> None:
+        watcher = _make_watcher({
+            "name": "prod",
+            "rules": {
+                "alert_keywords": ["fatal"],
+            },
+            "containers": {
+                "overrides": {
+                    "api": {
+                        "rules": {
+                            "alert_keywords": ["5xx"],
+                        }
+                    }
+                }
+            },
+        })
+        _prompt, _output, config = watcher._resolve_container_config("api")
+        result = apply_rules("5xx upstream broken", config=config)
+        assert result.triggered is True
+        assert result.matched_category == "ERROR"
 
     def test_llm_override_merges_with_host(self) -> None:
         watcher = _make_watcher({

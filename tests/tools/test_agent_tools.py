@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+import logging
 from copy import deepcopy
 from typing import Any
 
 import pytest
 
+from logdog.llm.permissions import issue_approval_token
 from logdog.llm.tool_types import ToolResult
 from logdog.llm.tools import create_tool_registry
 
@@ -130,7 +132,10 @@ async def test_tool_registry_invokes_all_task6_tools_and_audits_calls() -> None:
         metrics_writer_factory=lambda: writer,
         app_config={
             "llm": {
-                "permissions": {"dangerous_host_allowlist": ["prod-a"]},
+                "permissions": {
+                    "dangerous_host_allowlist": ["prod-a"],
+                    "approval_secret": "test-secret",
+                },
                 "tools": {
                     "query_logs": {"max_hours": 6, "max_lines": 50},
                     "rate_limit": {"limit": 20, "window_seconds": 60},
@@ -189,14 +194,21 @@ async def test_tool_registry_invokes_all_task6_tools_and_audits_calls() -> None:
         user_id="alice",
         arguments={"host": "prod-a", "container_id": "c1", "category": "error"},
     )
+    restart_arguments = {
+        "host": "prod-a",
+        "container_id": "c1",
+        "timeout": 15,
+    }
+    restart_arguments["approval_token"] = issue_approval_token(
+        "restart_container",
+        restart_arguments,
+        secret="test-secret",
+        issued_at=2_000_000_000,
+        ttl_seconds=300,
+    )
     restarted = await registry["restart_container"].invoke(
         user_id="alice",
-        arguments={
-            "host": "prod-a",
-            "container_id": "c1",
-            "timeout": 15,
-            "confirmed": True,
-        },
+        arguments=restart_arguments,
     )
 
     assert isinstance(hosts, ToolResult)
@@ -310,7 +322,10 @@ async def test_tool_registry_returns_success_when_audit_write_fails_after_handle
         metrics_writer_factory=lambda: _AuditFailWriter(),
         app_config={
             "llm": {
-                "permissions": {"dangerous_host_allowlist": ["prod-a"]},
+                "permissions": {
+                    "dangerous_host_allowlist": ["prod-a"],
+                    "approval_secret": "test-secret",
+                },
             }
         },
         restart_container_fn=restart_container_fn,
@@ -319,20 +334,126 @@ async def test_tool_registry_returns_success_when_audit_write_fails_after_handle
         ],
     )
 
+    restart_arguments = {
+        "host": "prod-a",
+        "container_id": "c1",
+        "timeout": 5,
+    }
+    restart_arguments["approval_token"] = issue_approval_token(
+        "restart_container",
+        restart_arguments,
+        secret="test-secret",
+        issued_at=2_000_000_000,
+        ttl_seconds=300,
+    )
     result = await registry["restart_container"].invoke(
         user_id="alice",
-        arguments={
-            "host": "prod-a",
-            "container_id": "c1",
-            "timeout": 5,
-            "confirmed": True,
-        },
+        arguments=restart_arguments,
     )
 
     assert isinstance(result, ToolResult)
     result_data = json.loads(result.content)
     assert result_data["ok"] is True
     assert restart_calls == [{"host": "prod-a", "container_id": "c1", "timeout": 5}]
+
+
+@pytest.mark.asyncio
+async def test_tool_registry_redacts_approval_token_in_audit_payload() -> None:
+    writer = _MetricsWriterStub()
+
+    async def restart_container_fn(
+        host: dict[str, Any],
+        container: dict[str, Any],
+        *,
+        timeout: int,
+    ) -> dict[str, Any]:
+        return {"ok": True, "container_id": container["id"], "timeout": timeout}
+
+    registry = create_tool_registry(
+        host_manager=_HostManagerStub(),
+        metrics_writer_factory=lambda: writer,
+        app_config={
+            "llm": {
+                "permissions": {
+                    "dangerous_host_allowlist": ["prod-a"],
+                    "approval_secret": "test-secret",
+                },
+            }
+        },
+        restart_container_fn=restart_container_fn,
+        list_containers_fn=lambda _host: [
+            {"id": "c1", "name": "api", "status": "running", "restart_count": 0}
+        ],
+    )
+
+    restart_arguments = {
+        "host": "prod-a",
+        "container_id": "c1",
+        "timeout": 5,
+    }
+    restart_arguments["approval_token"] = issue_approval_token(
+        "restart_container",
+        restart_arguments,
+        secret="test-secret",
+        issued_at=2_000_000_000,
+        ttl_seconds=300,
+    )
+
+    await registry["restart_container"].invoke(
+        user_id="alice",
+        arguments=restart_arguments,
+    )
+
+    payload, _patterns, _max_chars = writer.audit_calls[-1]
+    assert payload["arguments"]["approval_token"] == "***REDACTED***"
+
+
+@pytest.mark.asyncio
+async def test_tool_registry_writer_failure_log_does_not_include_approval_token(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    async def failing_writer_factory() -> Any:
+        raise RuntimeError("writer unavailable")
+
+    registry = create_tool_registry(
+        host_manager=_HostManagerStub(),
+        metrics_writer_factory=failing_writer_factory,
+        app_config={
+            "llm": {
+                "permissions": {
+                    "dangerous_host_allowlist": ["prod-a"],
+                    "approval_secret": "test-secret",
+                },
+            }
+        },
+        restart_container_fn=lambda *_args, **_kwargs: {"ok": True},
+        list_containers_fn=lambda _host: [
+            {"id": "c1", "name": "api", "status": "running", "restart_count": 0}
+        ],
+    )
+
+    restart_arguments = {
+        "host": "prod-a",
+        "container_id": "c1",
+        "timeout": 5,
+    }
+    restart_arguments["approval_token"] = issue_approval_token(
+        "restart_container",
+        restart_arguments,
+        secret="test-secret",
+        issued_at=2_000_000_000,
+        ttl_seconds=300,
+    )
+
+    with caplog.at_level(logging.WARNING):
+        with pytest.raises(RuntimeError, match="writer unavailable"):
+            await registry["restart_container"].invoke(
+                user_id="alice",
+                arguments=restart_arguments,
+            )
+
+    assert "approval_token" not in caplog.text
+    assert restart_arguments["approval_token"] not in caplog.text
 
 
 @pytest.mark.asyncio

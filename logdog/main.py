@@ -49,7 +49,7 @@ from logdog.core.docker_connector import (
 from logdog.core.host_manager import HostManager
 from logdog.core.metrics_writer import MetricsSqliteWriter
 from logdog.llm.agent_runtime import build_chat_runtime
-from logdog.llm.provider import resolve_for_role, resolve_llm_params
+from logdog.llm.provider import resolve_for_role
 from logdog.llm.tools import create_tool_registry
 from logdog.core.retention_scheduler import RetentionCleanupScheduler
 from logdog.notify.base import BaseNotifier, normalize_message_mode
@@ -2603,8 +2603,6 @@ def _resolve_authorized_telegram_users(
     if "telegram" not in authorized_users:
         return set(), False
     telegram_users = authorized_users.get("telegram")
-    if telegram_users is None:
-        return set(), True
     if not isinstance(telegram_users, (list, tuple, set, frozenset)):
         raise TypeError("app_config.agent.authorized_users.telegram must be a list")
     return (
@@ -2634,16 +2632,44 @@ _CHAT_ID_CACHE_FILE = "data/logdog_chat_id.json"
 # Chat-id cache helpers (per bot-token, XOR-encrypted, stored as base64 JSON)
 # ---------------------------------------------------------------------------
 
-def _chat_id_token_key(bot_token: str) -> tuple[str, bytes]:
-    """Return (fingerprint, xor_key) derived from the bot token.
+def _normalize_telegram_cache_scope(
+    authorized_user_ids: Any | None,
+) -> tuple[str, ...]:
+    if authorized_user_ids is None:
+        return ()
+    if not isinstance(
+        authorized_user_ids, (list, tuple, set, frozenset)
+    ):
+        authorized_user_ids = (authorized_user_ids,)
+    return tuple(
+        sorted(
+            {
+                str(user_id).strip()
+                for user_id in authorized_user_ids
+                if str(user_id).strip() != ""
+            }
+        )
+    )
+
+
+def _chat_id_token_key(
+    bot_token: str,
+    *,
+    authorized_user_ids: Any | None = None,
+) -> tuple[str, bytes]:
+    """Return (fingerprint, xor_key) derived from the bot token + auth scope.
 
     fingerprint — first 16 hex chars of SHA-256(token); used as JSON key.
     xor_key     — 32-byte SHA-256 of 'logdog-chatid:<token>'; used to
                   obfuscate the chat_id so it's not stored in plaintext.
     """
     token_bytes = bot_token.encode()
-    fingerprint = hashlib.sha256(token_bytes).hexdigest()[:16]
-    xor_key = hashlib.sha256(b"logdog-chatid:" + token_bytes).digest()
+    scope = _normalize_telegram_cache_scope(authorized_user_ids)
+    scope_bytes = "\x1f".join(scope).encode("utf-8")
+    fingerprint = hashlib.sha256(token_bytes + b"\x00" + scope_bytes).hexdigest()[:16]
+    xor_key = hashlib.sha256(
+        b"logdog-chatid:" + token_bytes + b"\x00" + scope_bytes
+    ).digest()
     return fingerprint, xor_key
 
 
@@ -2652,14 +2678,21 @@ def _xor_encrypt(data: bytes, key: bytes) -> bytes:
     return bytes(b ^ key[i % key_len] for i, b in enumerate(data))
 
 
-def _load_cached_chat_id(bot_token: str) -> str | None:
+def _load_cached_chat_id(
+    bot_token: str,
+    *,
+    authorized_user_ids: Any | None = None,
+) -> str | None:
     """Return the cached chat_id for this token, or None if missing/corrupt."""
     try:
         path = Path(_CHAT_ID_CACHE_FILE)
         if not path.exists():
             return None
         data = json.loads(path.read_text())
-        fingerprint, xor_key = _chat_id_token_key(bot_token)
+        fingerprint, xor_key = _chat_id_token_key(
+            bot_token,
+            authorized_user_ids=authorized_user_ids,
+        )
         encoded = data.get(fingerprint)
         if not encoded:
             return None
@@ -2675,7 +2708,12 @@ def _load_cached_chat_id(bot_token: str) -> str | None:
     return None
 
 
-def _persist_chat_id(bot_token: str, chat_id: str) -> None:
+def _persist_chat_id(
+    bot_token: str,
+    chat_id: str,
+    *,
+    authorized_user_ids: Any | None = None,
+) -> None:
     """Encrypt and persist chat_id keyed by token fingerprint (atomic write)."""
     import tempfile
 
@@ -2688,7 +2726,10 @@ def _persist_chat_id(bot_token: str, chat_id: str) -> None:
                 existing = json.loads(path.read_text())
             except Exception:  # noqa: BLE001
                 existing = {}
-        fingerprint, xor_key = _chat_id_token_key(bot_token)
+        fingerprint, xor_key = _chat_id_token_key(
+            bot_token,
+            authorized_user_ids=authorized_user_ids,
+        )
         encrypted = _xor_encrypt(chat_id.encode("utf-8"), xor_key)
         existing[fingerprint] = base64.b64encode(encrypted).decode()
         content = json.dumps(existing, indent=2)
@@ -2719,25 +2760,20 @@ def _load_persisted_authorized_users() -> set[str]:
     return set()
 
 
-def _persist_authorized_user(user_id: str) -> None:
-    """Append user_id to the authorized-users state file using an atomic replace.
-
-    Called at most once per process lifetime during the initial `/auth` pairing,
-    so no concurrent-write guard is needed beyond the atomic os.replace.
-    """
+def _write_persisted_authorized_users(user_ids: set[str] | list[str] | tuple[str, ...]) -> None:
+    """Write the Telegram authorized-users state file using an atomic replace."""
     import tempfile
+
+    normalized = [
+        str(user_id).strip()
+        for user_id in user_ids
+        if str(user_id).strip() != ""
+    ]
 
     try:
         path = Path(_AUTHORIZED_USERS_STATE_FILE)
         path.parent.mkdir(parents=True, exist_ok=True)
-        existing: list[str] = []
-        if path.exists():
-            existing = json.loads(path.read_text()).get("telegram", [])
-        if user_id not in existing:
-            existing.append(user_id)
-        content = json.dumps({"telegram": existing}, indent=2)
-        # Write to a temp file in the same directory, then atomically replace
-        # the target to avoid partial writes on crash.
+        content = json.dumps({"telegram": normalized}, indent=2)
         fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
         try:
             with os.fdopen(fd, "w") as f:
@@ -2749,9 +2785,37 @@ def _persist_authorized_user(user_id: str) -> None:
             except OSError:
                 pass
             raise
-        logger.info("persisted authorized Telegram user %s to %s", user_id, path)
+    except Exception:  # noqa: BLE001
+        logger.warning("failed to write persisted authorized users", exc_info=True)
+
+
+def _persist_authorized_user(user_id: str) -> None:
+    """Append user_id to the authorized-users state file using an atomic replace.
+
+    Called at most once per process lifetime during the initial `/auth` pairing,
+    so no concurrent-write guard is needed beyond the atomic os.replace.
+    """
+    try:
+        existing = _load_persisted_authorized_users()
+        existing.add(str(user_id).strip())
+        _write_persisted_authorized_users(existing)
+        logger.info(
+            "persisted authorized Telegram user %s to %s",
+            user_id,
+            _AUTHORIZED_USERS_STATE_FILE,
+        )
     except Exception:  # noqa: BLE001
         logger.warning("failed to persist authorized user", exc_info=True)
+
+
+def _clear_persisted_authorized_users() -> None:
+    _write_persisted_authorized_users(set())
+
+
+def _runtime_authorized_telegram_users(runtime: Any) -> tuple[str, ...]:
+    return _normalize_telegram_cache_scope(
+        getattr(runtime, "_authorized_user_ids", ())
+    )
 
 
 def _collect_pin_chat_id_funcs(notify_router: Any) -> list[Callable[[str], None]]:
@@ -2794,7 +2858,10 @@ def _wire_telegram_chat_id_sync(
     # Pre-pin cached chat_id from a previous run so push notifications work
     # right away without waiting for the user to send a message.
     if bot_token:
-        cached = _load_cached_chat_id(bot_token)
+        cached = _load_cached_chat_id(
+            bot_token,
+            authorized_user_ids=_runtime_authorized_telegram_users(runtime),
+        )
         if cached:
             logger.info(
                 "telegram: pre-pinning cached chat_id from previous run "
@@ -2814,7 +2881,11 @@ def _wire_telegram_chat_id_sync(
             except Exception:  # noqa: BLE001
                 logger.warning("pin_chat_id failed for a notify sender", exc_info=True)
         if bot_token:
-            _persist_chat_id(bot_token, chat_id)
+            _persist_chat_id(
+                bot_token,
+                chat_id,
+                authorized_user_ids=_runtime_authorized_telegram_users(runtime),
+            )
 
     if callable(getattr(runtime, "set_chat_id_seen_callback", None)):
         runtime.set_chat_id_seen_callback(_on_chat_id_seen)
@@ -2833,9 +2904,10 @@ def _build_telegram_runtime_from_config(
         _resolve_authorized_telegram_users(app_config)
     )
     telegram_pairing_code = _resolve_telegram_pairing_code(app_config)
-    # When the configured allowlist is omitted or explicitly empty, keep loading
-    # the persisted state file so paired users survive restarts.
-    if not has_explicit_telegram_users or not authorized_telegram_users:
+    if has_explicit_telegram_users:
+        if not authorized_telegram_users:
+            _clear_persisted_authorized_users()
+    else:
         authorized_telegram_users |= _load_persisted_authorized_users()
     telegram_bot_token = _resolve_telegram_bot_token(app_config)
     if telegram_bot_token and not authorized_telegram_users:
