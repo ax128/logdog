@@ -86,6 +86,7 @@ def test_api_hosts_redacts_sensitive_url_parts() -> None:
                 {
                     "name": "prod",
                     "url": "ssh://deploy:secret@10.0.1.10:22/var/run/docker.sock?token=abc#frag",
+                    "remote_worker": {"enabled": False},
                 }
             ],
             host_connector=host_connector,

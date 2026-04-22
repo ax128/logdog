@@ -620,6 +620,37 @@ async def test_docker_client_pool_close_all_stops_active_streams_then_closes_poo
 
 
 @pytest.mark.asyncio
+async def test_docker_client_pool_close_host_stops_host_streams_and_closes_host_client() -> (
+    None
+):
+    _reset_fake_client_payloads()
+    _block_stream_iterators(logs=True)
+    pool = docker_connector.DockerClientPool(
+        module_loader=lambda: _FakeStreamsDockerModule(),
+        to_thread=_run_sync,
+    )
+
+    log_stream = pool.stream_container_logs(_host(), {"id": "c1"}, tail=1)
+    await anext(log_stream)
+    await pool.connect_host(_host())
+    await pool.connect_host(_other_host("other"))
+
+    assert len(_FakeStreamsDockerClient.created) == 3
+
+    await pool.close_host("local")
+
+    stream_client = _FakeStreamsDockerClient.created[0]
+    local_pooled_client = _FakeStreamsDockerClient.created[1]
+    other_pooled_client = _FakeStreamsDockerClient.created[2]
+    assert stream_client.closed is True
+    assert local_pooled_client.closed is True
+    assert other_pooled_client.closed is False
+
+    await cast(Any, log_stream).aclose()
+    await pool.close_all()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("method_name", "kwargs"),
     [

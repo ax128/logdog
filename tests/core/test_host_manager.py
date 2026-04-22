@@ -123,9 +123,7 @@ async def test_connect_retry_uses_backoff_and_marks_disconnected_after_failures(
 
 
 @pytest.mark.asyncio
-async def test_reload_hosts_adds_new_host_and_keeps_removed_with_warning(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
+async def test_reload_hosts_adds_new_host_and_removes_missing_host() -> None:
     calls: list[str] = []
 
     async def connector(host: dict) -> dict:
@@ -141,23 +139,19 @@ async def test_reload_hosts_adds_new_host_and_keeps_removed_with_warning(
     )
     await manager.startup_check()
 
-    with caplog.at_level("WARNING"):
-        summary = await manager.reload_hosts(
-            [
-                {"name": "local", "url": "unix:///var/run/docker.sock"},
-                {"name": "new", "url": "unix:///var/run/docker.sock"},
-            ]
-        )
+    summary = await manager.reload_hosts(
+        [
+            {"name": "local", "url": "unix:///var/run/docker.sock"},
+            {"name": "new", "url": "unix:///var/run/docker.sock"},
+        ]
+    )
 
     assert summary["added"] == ["new"]
     assert summary["updated"] == ["local"]
-    assert summary["removed_requires_restart"] == ["legacy"]
-    assert any("cannot be hot-unloaded" in rec.message for rec in caplog.records)
-    assert {x["name"] for x in manager.list_host_statuses()} == {
-        "local",
-        "legacy",
-        "new",
-    }
+    assert summary["removed"] == ["legacy"]
+    assert summary["removed_requires_restart"] == []
+    assert {x["name"] for x in manager.list_host_statuses()} == {"local", "new"}
+    assert manager.get_host_config("legacy") is None
     assert "new" in calls
 
 

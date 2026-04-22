@@ -284,6 +284,25 @@ async def test_collect_remote_host_metrics_uses_strict_host_key_policy_by_defaul
     assert client.host_key_policy_name == "RejectPolicy"
 
 
+@pytest.mark.asyncio
+async def test_collect_remote_host_metrics_coerces_strict_host_key_from_string() -> (
+    None
+):
+    client = _SshClientStub(stdout='{"cpu_percent": 1}', stderr="", exit_status=0)
+
+    await collect_remote_host_metrics(
+        {
+            "name": "prod",
+            "url": "ssh://deploy@example-host",
+            "strict_host_key": "false",
+        },
+        ssh_client_factory=lambda: client,
+    )
+
+    assert client.loaded_host_keys is True
+    assert client.host_key_policy_name == "AutoAddPolicy"
+
+
 def test_assess_host_security_reports_ssh_and_system_issues() -> None:
     report = assess_host_security(
         {

@@ -39,6 +39,7 @@ _STORM_TASK_LOCK = threading.Lock()
 _PENDING_STORM_END_TASKS: dict[tuple[int, str], asyncio.Task[None]] = {}
 _DEFAULT_RECONNECT_BACKOFF_SECONDS = 1.0
 _MAX_RECONNECT_BACKOFF_SECONDS = 10.0
+_DEFAULT_REMOTE_MAX_CONTAINER_STREAMS = 8
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,6 +114,22 @@ def _parse_log_timestamp(raw: str) -> float | None:
 
 def _format_ts(ts: float) -> str:
     return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+
+
+def _extract_rule_patterns(entries: Any) -> list[str]:
+    if not isinstance(entries, (list, tuple)):
+        return []
+    patterns: list[str] = []
+    for entry in entries:
+        if isinstance(entry, str):
+            normalized = entry.strip()
+        elif isinstance(entry, dict):
+            normalized = str(entry.get("pattern") or "").strip()
+        else:
+            normalized = ""
+        if normalized != "":
+            patterns.append(normalized)
+    return patterns
 
 
 def _mark_dedup_task_done(
@@ -686,6 +703,10 @@ class LogStreamWatcher:
             0,
             int(watch_settings.get("lookback_seconds", 300)),
         )
+        self._max_container_streams = _resolve_max_container_streams(
+            host=self._host,
+            watch_settings=watch_settings,
+        )
         self._reconnect_backoff_seconds = min(
             max(
                 0.0,
@@ -704,6 +725,7 @@ class LogStreamWatcher:
         self._worker_tasks: list[asyncio.Task[None]] = []
         self._dropped_events = 0
         self._shutting_down = False
+        self._last_skipped_container_count: int | None = None
 
     @property
     def dropped_events(self) -> int:
@@ -718,7 +740,7 @@ class LogStreamWatcher:
 
         host_name = str(self._host.get("name") or "")
         containers = await _maybe_await(self._list_containers(host_name))
-        current: dict[str, dict[str, Any]] = {}
+        eligible: list[dict[str, Any]] = []
         for container in list(containers or []):
             container_id = str(
                 container.get("id") or container.get("container_id") or ""
@@ -727,6 +749,28 @@ class LogStreamWatcher:
                 continue
             if not self._should_watch_container(container):
                 continue
+            eligible.append(dict(container))
+
+        selected, skipped = _select_containers_for_watch(
+            eligible,
+            existing_ids=set(self._container_tasks),
+            max_streams=self._max_container_streams,
+        )
+        if skipped > 0 and skipped != self._last_skipped_container_count:
+            logger.warning(
+                "log stream watcher capped host=%s watched=%d skipped=%d max_streams=%d",
+                host_name or "default",
+                len(selected),
+                skipped,
+                int(self._max_container_streams or 0),
+            )
+        self._last_skipped_container_count = skipped if skipped > 0 else None
+
+        current: dict[str, dict[str, Any]] = {}
+        for container in selected:
+            container_id = str(
+                container.get("id") or container.get("container_id") or ""
+            ).strip()
             current[container_id] = dict(container)
             if container_id in self._container_tasks:
                 continue
@@ -793,6 +837,11 @@ class LogStreamWatcher:
                 elif lookback > 0:
                     # First connect: only look back N seconds
                     stream_kwargs["since"] = int(time.time() - lookback)
+                remote_pipeline = self._build_remote_stream_pipeline_config(
+                    config=c_config
+                )
+                if remote_pipeline is not None:
+                    stream_kwargs["pipeline"] = remote_pipeline
 
                 async for record in self._stream_logs(self._host, container, **stream_kwargs):
                     # Track timestamp for reconnect resume
@@ -872,7 +921,105 @@ class LogStreamWatcher:
             current = list(preprocessor.process(current))
         return current
 
+    def _uses_remote_worker_backend(self) -> bool:
+        url = str(self._host.get("url") or "").strip().lower()
+        if not url.startswith("ssh://"):
+            return False
+        remote_worker = self._host.get("remote_worker")
+        # Default-on for ssh:// hosts. Opt out via `remote_worker.enabled: false`.
+        if remote_worker is None:
+            return True
+        if isinstance(remote_worker, bool):
+            return remote_worker
+        if not isinstance(remote_worker, dict):
+            return True
+
+        enabled = remote_worker.get("enabled")
+        if enabled is None:
+            return True
+        if isinstance(enabled, bool):
+            return enabled
+        if isinstance(enabled, (int, float)):
+            return bool(enabled)
+        if isinstance(enabled, str):
+            normalized = enabled.strip().lower()
+            if normalized in {"", "0", "false", "no", "off"}:
+                return False
+            if normalized in {"1", "true", "yes", "on"}:
+                return True
+        return bool(enabled)
+
+    def _build_remote_stream_pipeline_config(
+        self,
+        *,
+        config: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        if not self._uses_remote_worker_backend():
+            return None
+
+        pipeline: dict[str, Any] = {}
+        rules = config.get("rules")
+        rules_cfg = dict(rules) if isinstance(rules, dict) else {}
+
+        exclude_patterns = _extract_rule_patterns(rules_cfg.get("ignore"))
+        if exclude_patterns:
+            pipeline["exclude"] = exclude_patterns
+
+        redact_rules = rules_cfg.get("redact")
+        if isinstance(redact_rules, list) and redact_rules:
+            pipeline["redact"] = deepcopy(redact_rules)
+
+        custom_alerts = rules_cfg.get("custom_alerts")
+        if isinstance(custom_alerts, list) and custom_alerts:
+            pipeline["custom_alerts"] = deepcopy(custom_alerts)
+
+        alert_keywords = rules_cfg.get("alert_keywords")
+        if alert_keywords is None:
+            alert_keywords = config.get("alert_keywords")
+        if isinstance(alert_keywords, (list, tuple)):
+            copied_keywords = list(deepcopy(alert_keywords))
+            if copied_keywords:
+                pipeline["alert_keywords"] = copied_keywords
+
+        builtin_preprocessor_config = (
+            self._resolve_remote_builtin_preprocessor_pipeline_config()
+        )
+        if builtin_preprocessor_config:
+            pipeline.update(builtin_preprocessor_config)
+
+        return pipeline or None
+
+    def _resolve_remote_builtin_preprocessor_pipeline_config(
+        self,
+    ) -> dict[str, Any]:
+        raw = self._host.get("preprocessors")
+        if not isinstance(raw, list):
+            return {}
+
+        pipeline: dict[str, Any] = {}
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or "").strip().lower()
+            if name == "level_filter":
+                min_level = str(item.get("min_level") or "").strip().lower()
+                if min_level and "min_level" not in pipeline:
+                    pipeline["min_level"] = min_level
+            elif name == "head_tail":
+                if "head" not in pipeline and item.get("head") is not None:
+                    pipeline["head"] = deepcopy(item.get("head"))
+                if "tail" not in pipeline and item.get("tail") is not None:
+                    pipeline["tail"] = deepcopy(item.get("tail"))
+            elif name == "dedup":
+                dedup_window = item.get("max_consecutive")
+                if dedup_window is not None and "dedup_window" not in pipeline:
+                    pipeline["dedup_window"] = deepcopy(dedup_window)
+        return pipeline
+
     def _should_watch_container(self, container: dict[str, Any]) -> bool:
+        if not _is_container_watch_active(container):
+            return False
+
         container_cfg = self._host.get("containers")
         if not isinstance(container_cfg, dict):
             return True
@@ -1054,6 +1201,104 @@ class LogStreamWatcher:
         workers = list(self._worker_tasks)
         self._worker_tasks.clear()
         await asyncio.gather(*workers, return_exceptions=True)
+
+
+def _is_container_watch_active(container: dict[str, Any]) -> bool:
+    raw_status = container.get("status")
+    if raw_status is None:
+        raw_status = container.get("state")
+    status = str(raw_status or "").strip().lower()
+    if status == "":
+        return True
+
+    first_token = status.split()[0]
+    return first_token in {"running", "restarting", "up"}
+
+
+def _uses_remote_worker_backend(host: dict[str, Any] | None) -> bool:
+    if not isinstance(host, dict):
+        return False
+    url = str(host.get("url") or "").strip().lower()
+    if not url.startswith("ssh://"):
+        return False
+    remote_worker = host.get("remote_worker")
+    # Default-on for ssh:// hosts. Opt out via `remote_worker.enabled: false`.
+    if remote_worker is None:
+        return True
+    if isinstance(remote_worker, bool):
+        return remote_worker
+    if not isinstance(remote_worker, dict):
+        return True
+
+    enabled = remote_worker.get("enabled")
+    if enabled is None:
+        return True
+    if isinstance(enabled, bool):
+        return enabled
+    if isinstance(enabled, (int, float)):
+        return bool(enabled)
+    if isinstance(enabled, str):
+        normalized = enabled.strip().lower()
+        if normalized in {"", "0", "false", "no", "off"}:
+            return False
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+    return bool(enabled)
+
+
+def _resolve_max_container_streams(
+    *,
+    host: dict[str, Any],
+    watch_settings: dict[str, Any],
+) -> int | None:
+    raw_value = watch_settings.get("max_containers")
+    if raw_value is not None and str(raw_value).strip() != "":
+        value = int(raw_value)
+        if value < 0:
+            raise ValueError("watch.max_containers must be >= 0")
+        return value
+
+    if _uses_remote_worker_backend(host):
+        return _DEFAULT_REMOTE_MAX_CONTAINER_STREAMS
+    return None
+
+
+def _select_containers_for_watch(
+    containers: list[dict[str, Any]],
+    *,
+    existing_ids: set[str],
+    max_streams: int | None,
+) -> tuple[list[dict[str, Any]], int]:
+    if max_streams is None or len(containers) <= max_streams:
+        return list(containers), 0
+    if max_streams <= 0:
+        return [], len(containers)
+
+    selected: list[dict[str, Any]] = []
+    selected_ids: set[str] = set()
+    for container in containers:
+        container_id = str(
+            container.get("id") or container.get("container_id") or ""
+        ).strip()
+        if container_id == "" or container_id not in existing_ids:
+            continue
+        selected.append(container)
+        selected_ids.add(container_id)
+        if len(selected) >= max_streams:
+            return selected, len(containers) - len(selected)
+
+    for container in containers:
+        container_id = str(
+            container.get("id") or container.get("container_id") or ""
+        ).strip()
+        if container_id == "" or container_id in selected_ids:
+            continue
+        selected.append(container)
+        selected_ids.add(container_id)
+        if len(selected) >= max_streams:
+            break
+
+    return selected, len(containers) - len(selected)
 
 
 async def _maybe_await(value: Any) -> Any:

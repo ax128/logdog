@@ -180,6 +180,252 @@ async def test_log_stream_watcher_refresh_respects_container_include_exclude_and
 
 
 @pytest.mark.asyncio
+async def test_log_stream_watcher_passes_remote_pipeline_to_remote_worker_stream() -> None:
+    stream_kwargs_calls: list[dict[str, object]] = []
+    alert_runner = _RecordingAlertRunner()
+
+    async def stream_logs(_host: dict, _container: dict, **kwargs):
+        stream_kwargs_calls.append(dict(kwargs))
+        yield {"timestamp": "2026-04-11T10:00:02Z", "line": "ERROR token=abc"}
+
+    watcher = LogStreamWatcher(
+        host={
+            "name": "host-a",
+            "url": "ssh://deploy@example-host",
+            "remote_worker": {"enabled": True},
+            "rules": {
+                "ignore": ["healthcheck ok", {"pattern": "GET /ping"}],
+                "redact": [{"pattern": "token=\\S+", "replace": "token=***"}],
+                "custom_alerts": [{"pattern": "ERROR", "category": "BUSINESS"}],
+            },
+            "alert_keywords": ["ERROR", "FATAL"],
+            "preprocessors": [
+                {"name": "json_extract"},
+                {"name": "level_filter", "min_level": "error"},
+                {"name": "dedup", "max_consecutive": 3},
+            ],
+        },
+        stream_logs=stream_logs,
+        run_alert=alert_runner,
+    )
+
+    await watcher.watch_container({"id": "c1", "name": "api"})
+
+    assert len(stream_kwargs_calls) == 1
+    assert stream_kwargs_calls[0]["pipeline"] == {
+        "exclude": ["healthcheck ok", "GET /ping"],
+        "redact": [{"pattern": "token=\\S+", "replace": "token=***"}],
+        "custom_alerts": [{"pattern": "ERROR", "category": "BUSINESS"}],
+        "alert_keywords": ["ERROR", "FATAL"],
+        "min_level": "error",
+        "dedup_window": 3,
+    }
+    assert alert_runner.calls[0]["line"] == "ERROR token=abc"
+
+
+@pytest.mark.asyncio
+async def test_log_stream_watcher_maps_only_safe_builtin_preprocessors_to_remote_pipeline() -> (
+    None
+):
+    stream_kwargs_calls: list[dict[str, object]] = []
+    alert_runner = _RecordingAlertRunner()
+
+    async def stream_logs(_host: dict, _container: dict, **kwargs):
+        stream_kwargs_calls.append(dict(kwargs))
+        yield {"timestamp": "2026-04-11T10:00:02Z", "line": "ERROR token=abc"}
+
+    watcher = LogStreamWatcher(
+        host={
+            "name": "host-a",
+            "url": "ssh://deploy@example-host",
+            "remote_worker": {"enabled": True},
+            "rules": {
+                "ignore": ["healthcheck ok", {"pattern": "GET /ping"}],
+                "redact": [{"pattern": "token=\\S+", "replace": "token=***"}],
+                "custom_alerts": [{"pattern": "ERROR", "category": "BUSINESS"}],
+            },
+            "alert_keywords": ["ERROR", "FATAL"],
+            "preprocessors": [
+                {"name": "json_extract", "field": "payload"},
+                {"name": "level_filter", "min_level": "error"},
+                {"name": "head_tail", "head": 4, "tail": 2},
+                {"name": "dedup", "max_consecutive": 9},
+                {"name": "kv_extract", "delimiter": "="},
+                {"name": "custom_template", "pattern": "token"},
+            ],
+        },
+        stream_logs=stream_logs,
+        run_alert=alert_runner,
+    )
+
+    await watcher.watch_container({"id": "c1", "name": "api"})
+
+    assert len(stream_kwargs_calls) == 1
+    assert stream_kwargs_calls[0]["pipeline"] == {
+        "exclude": ["healthcheck ok", "GET /ping"],
+        "redact": [{"pattern": "token=\\S+", "replace": "token=***"}],
+        "custom_alerts": [{"pattern": "ERROR", "category": "BUSINESS"}],
+        "alert_keywords": ["ERROR", "FATAL"],
+        "min_level": "error",
+        "head": 4,
+        "tail": 2,
+        "dedup_window": 9,
+    }
+    assert alert_runner.calls[0]["line"] == "ERROR token=abc"
+
+
+@pytest.mark.asyncio
+async def test_log_stream_watcher_skips_remote_pipeline_for_non_remote_worker_host() -> None:
+    stream_kwargs_calls: list[dict[str, object]] = []
+    alert_runner = _RecordingAlertRunner()
+
+    async def stream_logs(_host: dict, _container: dict, **kwargs):
+        stream_kwargs_calls.append(dict(kwargs))
+        yield {"timestamp": "2026-04-11T10:00:02Z", "line": "ERROR live event"}
+
+    watcher = LogStreamWatcher(
+        host={
+            "name": "host-a",
+            "url": "unix:///var/run/docker.sock",
+            "remote_worker": {"enabled": True},
+            "rules": {
+                "redact": [{"pattern": "token=\\S+", "replace": "token=***"}],
+            },
+            "preprocessors": [{"name": "level_filter", "min_level": "error"}],
+        },
+        stream_logs=stream_logs,
+        run_alert=alert_runner,
+    )
+
+    await watcher.watch_container({"id": "c1", "name": "api"})
+
+    assert len(stream_kwargs_calls) == 1
+    assert "pipeline" not in stream_kwargs_calls[0]
+
+
+@pytest.mark.asyncio
+async def test_log_stream_watcher_refresh_cancels_task_when_container_is_no_longer_active() -> (
+    None
+):
+    listed_batches = [
+        [{"id": "c1", "name": "api", "status": "running"}],
+        [{"id": "c1", "name": "api", "status": "exited"}],
+    ]
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def list_containers(_host_name: str) -> list[dict]:
+        if listed_batches:
+            return listed_batches.pop(0)
+        return []
+
+    async def stream_logs(_host: dict, _container: dict, **_kwargs):
+        started.set()
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+        if False:
+            yield {}
+
+    watcher = LogStreamWatcher(
+        host={"name": "host-a", "url": "unix:///var/run/docker.sock"},
+        list_containers=list_containers,
+        stream_logs=stream_logs,
+        run_alert=lambda *_args, **_kwargs: None,
+    )
+
+    await watcher.refresh_containers()
+    await asyncio.wait_for(started.wait(), timeout=1.0)
+
+    assert "c1" in watcher._container_tasks
+
+    await watcher.refresh_containers()
+    await asyncio.wait_for(cancelled.wait(), timeout=1.0)
+
+    assert "c1" not in watcher._container_tasks
+
+    await watcher.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_log_stream_watcher_limits_ssh_host_container_streams_by_default() -> (
+    None
+):
+    async def list_containers(_host_name: str) -> list[dict]:
+        return [
+            {"id": f"c{i}", "name": f"svc-{i}", "status": "running"}
+            for i in range(12)
+        ]
+
+    async def stream_logs(_host: dict, _container: dict, **_kwargs):
+        await asyncio.sleep(3600)
+        if False:
+            yield {}
+
+    watcher = LogStreamWatcher(
+        host={
+            "name": "host-a",
+            "url": "ssh://deploy@example-host",
+            "remote_worker": {"enabled": True},
+        },
+        list_containers=list_containers,
+        stream_logs=stream_logs,
+        run_alert=lambda *_args, **_kwargs: None,
+    )
+
+    await watcher.refresh_containers()
+
+    assert len(watcher._container_tasks) == 8
+    assert set(watcher._container_tasks.keys()) == {
+        "c0",
+        "c1",
+        "c2",
+        "c3",
+        "c4",
+        "c5",
+        "c6",
+        "c7",
+    }
+
+    await watcher.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_log_stream_watcher_allows_disabling_container_streams_for_ssh_host() -> (
+    None
+):
+    async def list_containers(_host_name: str) -> list[dict]:
+        return [
+            {"id": "c1", "name": "svc-1", "status": "running"},
+            {"id": "c2", "name": "svc-2", "status": "running"},
+        ]
+
+    async def stream_logs(_host: dict, _container: dict, **_kwargs):
+        await asyncio.sleep(3600)
+        if False:
+            yield {}
+
+    watcher = LogStreamWatcher(
+        host={
+            "name": "host-a",
+            "url": "ssh://deploy@example-host",
+            "watch": {"max_containers": 0},
+        },
+        list_containers=list_containers,
+        stream_logs=stream_logs,
+        run_alert=lambda *_args, **_kwargs: None,
+    )
+
+    await watcher.refresh_containers()
+
+    assert watcher._container_tasks == {}
+
+    await watcher.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_log_stream_watcher_default_cooldown_store_is_per_instance() -> None:
     alert_runner = _RecordingAlertRunner()
 

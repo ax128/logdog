@@ -282,7 +282,7 @@ llm:
 agent:
   authorized_users:
     telegram: []
-    # 留空表示不预置静态用户，已持久化的已配对用户仍会在重启后加载
+    # 显式配置 [] 会清空授权并同步清理持久化状态；只有省略 telegram 键时才会回读已持久化用户
     telegram_pairing_code: "请替换为高强度随机口令"
     # 首次使用: 给 Bot 发送 /auth <口令>，或 /auth@BotName <口令>（BotName 必须是当前 Bot 用户名）
     # 只接受精确 /auth 命令，/authz 或 /auth@OtherBot 这类近似/错目标命令会被拒绝
@@ -305,6 +305,7 @@ defaults:
     queue_maxsize: 1024
     worker_count: 2
     drop_when_full: true
+    max_containers: 8        # SSH 主机默认最多并发跟踪 8 个容器日志；设为 0 可禁用日志流
     lookback_seconds: 300    # 启动/重连时回看最近 N 秒的日志 (默认 300 = 5分钟)
                              # 设为 0 表示不限制（回放全部历史）
 
@@ -333,9 +334,12 @@ defaults:
 #                    executive_summary / postmortem
 #                    (或自定义: 放在 templates/output/ 目录下)
 #
-#   preprocessors: dedup / level_filter / json_extract /
-#                  kv_extract / head_tail
-#                  (或自定义: 放在 templates/preprocessors/ 目录下)
+#   preprocessors: 仅远端安全下发的 builtin 子集会映射为远端 pipeline:
+#                  level_filter -> min_level
+#                  head_tail    -> head / tail
+#                  dedup(max_consecutive) -> dedup_window
+#                  json_extract / kv_extract / 自定义模板 preprocessor
+#                  仅在本地执行，不会下发到远端
 # =====================================================================
 hosts:
   # ── 本地开发 ──
@@ -349,6 +353,14 @@ hosts:
   #   url: ssh://root@10.0.1.1:22
   #   ssh_key: /root/.ssh/id_ed25519
   #   docker_timeout_seconds: 30       # 远端 Docker 响应慢时可按主机调大
+  #   remote_worker:
+  #     enabled: true                  # 走远端 worker 时打开
+  #     temp_root: /tmp                # 远端临时目录根路径
+  #     heartbeat_interval_seconds: 15 # 本地发心跳间隔
+  #     heartbeat_timeout_seconds: 45  # 远端断链自清理超时
+  #     heartbeat_poll_interval_seconds: 1
+  #   # 远端 pipeline 只接收安全 builtin 的受限字段映射:
+  #   # level_filter(min_level), head_tail(head/tail), dedup(max_consecutive -> dedup_window)
   #   prompt_template: default_alert     # 该服务器的默认提示词
   #   output_template: ops_friendly      # 该服务器的默认输出格式
   #   notify:
@@ -397,6 +409,9 @@ hosts:
   # - name: staging
   #   url: ssh://deploy@10.0.2.1:22
   #   ssh_key: /root/.ssh/id_ed25519
+  #   remote_worker:
+  #     enabled: true
+  #     temp_root: /tmp
   #   output_template: brief             # 测试环境用简短格式
   #   notify:
   #     channels: [staging-tel]

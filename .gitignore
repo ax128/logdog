@@ -38,7 +38,10 @@ config/logdog.yaml
 .claude/settings.local.json
 
 # ── 文档 / 内部规划 ──────────────────────────────────────────
-docs/
+docs/*
+!docs/architecture/
+docs/architecture/*
+!docs/architecture/single-ssh-remote-worker-plan.md
 
 # ── Worktrees ────────────────────────────────────────────────
 .worktrees/

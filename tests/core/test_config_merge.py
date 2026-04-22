@@ -504,6 +504,36 @@ def test_expand_effective_hosts_merges_defaults_into_each_host() -> None:
     assert expanded[1]["notify"]["telegram"]["chat_ids"] == [1111]
 
 
+def test_expand_effective_hosts_merges_watch_defaults_with_host_overrides() -> None:
+    expanded = expand_effective_hosts(
+        {
+            "defaults": {
+                "watch": {
+                    "queue_maxsize": 1024,
+                    "worker_count": 2,
+                    "drop_when_full": True,
+                    "lookback_seconds": 300,
+                }
+            },
+            "hosts": [
+                {
+                    "name": "prod",
+                    "url": "ssh://deploy@10.0.1.10",
+                    "watch": {"max_containers": 0},
+                }
+            ],
+        }
+    )
+
+    assert expanded[0]["watch"] == {
+        "queue_maxsize": 1024,
+        "worker_count": 2,
+        "drop_when_full": True,
+        "lookback_seconds": 300,
+        "max_containers": 0,
+    }
+
+
 def test_expand_effective_hosts_requires_hosts_list() -> None:
     with pytest.raises(TypeError, match="hosts"):
         expand_effective_hosts({"hosts": {"name": "broken"}})

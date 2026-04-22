@@ -680,3 +680,29 @@ def test_exec_container_operation_raises_clear_error_when_sleep_missing() -> Non
 
     with pytest.raises(RuntimeError, match="requires /bin/sh and sleep"):
         operation(_Client())
+
+
+def test_exec_container_operation_raises_clear_error_when_sleep_missing_without_127_exit() -> None:
+    class _ExecContainer:
+        name = "api"
+
+        def exec_run(self, command: Any, demux: bool = True):
+            _ = command
+            _ = demux
+            return 0, (b"", b"/bin/sh: 1: sleep: not found")
+
+    class _Containers:
+        def get(self, _container_id: str):
+            return _ExecContainer()
+
+    class _Client:
+        containers = _Containers()
+
+    operation = docker_connector._exec_container_operation(
+        "c1",
+        command="echo hello",
+        timeout_seconds=12,
+    )
+
+    with pytest.raises(RuntimeError, match="requires /bin/sh and sleep"):
+        operation(_Client())

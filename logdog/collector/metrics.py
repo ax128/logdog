@@ -56,8 +56,9 @@ def _compute_cpu_percent(
     stats: dict[str, Any],
     previous_stats: dict[str, Any] | None,
 ) -> float:
+    fallback_cpu_percent = _to_float(stats.get("cpu_percent"))
     if not previous_stats:
-        return 0.0
+        return fallback_cpu_percent
 
     cpu_stats = stats.get("cpu_stats") or {}
     prev_cpu_stats = previous_stats.get("cpu_stats") or {}
@@ -69,7 +70,7 @@ def _compute_cpu_percent(
     cpu_delta = curr_total - prev_total
     system_delta = curr_system - prev_system
     if cpu_delta <= 0 or system_delta <= 0:
-        return 0.0
+        return fallback_cpu_percent
 
     online_cpus = _to_int(cpu_stats.get("online_cpus"))
     if online_cpus <= 0:
@@ -78,7 +79,7 @@ def _compute_cpu_percent(
 
     percent = (cpu_delta / system_delta) * online_cpus * 100.0
     if percent < 0:
-        return 0.0
+        return fallback_cpu_percent
     return float(percent)
 
 

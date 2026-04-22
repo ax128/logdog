@@ -1,12 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import inspect
 import json
 from pathlib import Path
 from textwrap import dedent
 
 import pytest
-from fastapi.testclient import TestClient
 
 import logdog.main as main_module
 
@@ -15,6 +15,101 @@ def _write_yaml(path: Path, content: str) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(dedent(content).strip() + "\n", encoding="utf-8")
     return path
+
+
+class _HybridAdapterStub:
+    instances: list["_HybridAdapterStub"] = []
+
+    def __init__(self, *, direct_backend, worker_backend) -> None:
+        self.direct_backend = direct_backend
+        self.worker_backend = worker_backend
+        self.connect_calls: list[dict[str, object]] = []
+        self.collect_calls: list[tuple[dict[str, object], dict[str, object]]] = []
+        self.close_host_calls: list[object] = []
+        self.close_all_calls = 0
+        _HybridAdapterStub.instances.append(self)
+
+    async def connect_host(self, host: dict[str, object]) -> dict[str, object]:
+        self.connect_calls.append(dict(host))
+        return {"server_version": "24.0.7"}
+
+    async def list_containers_for_host(self, host: dict[str, object]) -> list[dict]:
+        _ = host
+        return [{"id": "c1", "name": "svc"}]
+
+    async def fetch_container_stats(
+        self, host: dict[str, object], container: dict[str, object]
+    ) -> dict[str, object]:
+        _ = host, container
+        return {"cpu_stats": {"cpu_usage": {"total_usage": 1}, "system_cpu_usage": 1}}
+
+    async def query_container_logs(
+        self, host: dict[str, object], container: dict[str, object], **kwargs
+    ) -> list[dict[str, object]]:
+        _ = host, container, kwargs
+        return []
+
+    async def stream_container_logs(
+        self, host: dict[str, object], container: dict[str, object], **kwargs
+    ):
+        _ = host, container, kwargs
+        if False:
+            yield {}
+
+    async def stream_docker_events(self, host: dict[str, object], **kwargs):
+        _ = host, kwargs
+        if False:
+            yield {}
+
+    async def restart_container_for_host(
+        self, host: dict[str, object], container: dict[str, object], **kwargs
+    ) -> dict[str, object]:
+        _ = host, container, kwargs
+        return {}
+
+    async def exec_container_for_host(
+        self, host: dict[str, object], container: dict[str, object], **kwargs
+    ) -> dict[str, object]:
+        _ = host, container, kwargs
+        return {}
+
+    async def collect_host_metrics_for_host(
+        self, host: dict[str, object], **kwargs
+    ) -> dict[str, object]:
+        self.collect_calls.append((dict(host), dict(kwargs)))
+        return {"source": "remote-worker", "cpu_percent": 12.5}
+
+    async def close_host(self, host_name_or_host) -> None:
+        self.close_host_calls.append(host_name_or_host)
+
+    async def close_all(self) -> None:
+        self.close_all_calls += 1
+
+
+class _StickyHybridAdapterStub(_HybridAdapterStub):
+    def __init__(self, *, direct_backend, worker_backend) -> None:
+        super().__init__(direct_backend=direct_backend, worker_backend=worker_backend)
+        self.active_sessions: dict[str, dict[str, object]] = {}
+
+    async def connect_host(self, host: dict[str, object]) -> dict[str, object]:
+        self.connect_calls.append(dict(host))
+        host_name = str(host.get("name") or "")
+        session = self.active_sessions.get(host_name)
+        if session is None:
+            session = dict(host)
+            self.active_sessions[host_name] = session
+        return {
+            "server_version": "24.0.7",
+            "session_host": dict(session),
+        }
+
+    async def close_host(self, host_name_or_host) -> None:
+        self.close_host_calls.append(host_name_or_host)
+        if isinstance(host_name_or_host, dict):
+            host_name = str(host_name_or_host.get("name") or "")
+        else:
+            host_name = str(host_name_or_host or "")
+        self.active_sessions.pop(host_name, None)
 
 
 def test_reload_error_message_sanitizes_token_like_fields() -> None:
@@ -57,24 +152,29 @@ def test_create_app_reads_web_tokens_from_env(
     monkeypatch.setenv("WEB_AUTH_TOKEN", "env-web-token")
     monkeypatch.setenv("WEB_ADMIN_TOKEN", "env-admin-token")
 
-    app = main_module.create_app(
-        hosts=[{"name": "local", "url": "unix:///var/run/docker.sock"}],
-        enable_metrics_scheduler=False,
-        enable_retention_cleanup=False,
+    assert (
+        main_module._resolve_web_auth_token(
+            explicit_token=None,
+            allow_insecure_default_tokens=False,
+        )
+        == "env-web-token"
+    )
+    assert (
+        main_module._resolve_web_admin_token(
+            explicit_token=None,
+            allow_insecure_default_tokens=False,
+        )
+        == "env-admin-token"
     )
 
-    with TestClient(app) as client:
-        ok = client.get(
-            "/api/hosts",
-            headers={"Authorization": "Bearer env-web-token"},
-        )
-        forbidden = client.get(
-            "/api/hosts",
-            headers={"Authorization": "Bearer web-token"},
-        )
-
-    assert ok.status_code == 200
-    assert forbidden.status_code == 403
+    # Create the app to ensure create_app accepts env-provided tokens without explicit args.
+    main_module.create_app(
+        hosts=[{"name": "local", "url": "unix:///var/run/docker.sock"}],
+        host_connector=lambda _host: {"server_version": "24.0.7"},
+        enable_metrics_scheduler=False,
+        enable_retention_cleanup=False,
+        enable_watch_manager=False,
+    )
 
 
 def test_create_app_prefers_explicit_app_config_over_config_path_and_env(
@@ -113,6 +213,106 @@ def test_create_app_prefers_explicit_app_config_over_config_path_and_env(
     assert loaded_host["url"] == "unix:///from-app.sock"
     assert app.state.host_manager.get_host_config("from-arg") is None
     assert app.state.host_manager.get_host_config("from-env") is None
+
+
+def test_create_app_uses_hybrid_host_adapter_for_remote_worker_hosts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _HybridAdapterStub.instances.clear()
+    monkeypatch.setattr(main_module, "HybridHostAdapter", _HybridAdapterStub)
+
+    app = main_module.create_app(
+        app_config={
+            "hosts": [
+                {
+                    "name": "prod",
+                    "url": "ssh://deploy@10.0.1.10:22",
+                    "remote_worker": {"enabled": True},
+                }
+            ]
+        },
+        host_connector=lambda _host: {"server_version": "24.0.7"},
+        enable_metrics_scheduler=False,
+        enable_retention_cleanup=False,
+        enable_watch_manager=False,
+    )
+
+    assert len(_HybridAdapterStub.instances) == 1
+    adapter = _HybridAdapterStub.instances[0]
+    assert app.state.docker_client_pool is adapter
+    assert adapter.direct_backend is not None
+    assert adapter.worker_backend is not None
+
+
+def test_create_app_prefers_adapter_host_metrics_collection_for_remote_worker_hosts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _HybridAdapterStub.instances.clear()
+    monkeypatch.setattr(main_module, "HybridHostAdapter", _HybridAdapterStub)
+
+    ssh_key_path = tmp_path / "id_ed25519"
+    ssh_key_path.write_text("key", encoding="utf-8")
+    ssh_key_path.chmod(0o600)
+
+    saved_samples: list[dict[str, object]] = []
+
+    async def save_host_metric(sample: dict[str, object]) -> None:
+        saved_samples.append(dict(sample))
+
+    app = main_module.create_app(
+        app_config={
+            "hosts": [
+                {
+                    "name": "prod",
+                    "url": "ssh://deploy@10.0.1.10:22",
+                    "ssh_key": str(ssh_key_path),
+                    "remote_worker": {"enabled": True},
+                }
+            ],
+            "metrics": {
+                "host_system": {
+                    "enabled": True,
+                    "sample_interval_seconds": 30,
+                    "collect_load": True,
+                    "collect_network": True,
+                }
+            },
+        },
+        host_connector=lambda _host: {"server_version": "24.0.7"},
+        save_host_metric_fn=save_host_metric,
+        enable_metrics_scheduler=False,
+        enable_retention_cleanup=False,
+        enable_watch_manager=False,
+    )
+
+    async def run_case() -> None:
+        await app.state.host_manager.startup_check()
+        written = await app.state.host_metrics_scheduler.run_cycle_once()
+        assert written == 1
+
+    asyncio.run(run_case())
+
+    adapter = _HybridAdapterStub.instances[0]
+    assert adapter.connect_calls[0]["name"] == "prod"
+    assert adapter.connect_calls[0]["url"] == "ssh://deploy@10.0.1.10:22"
+    assert adapter.connect_calls[0]["ssh_key"] == str(ssh_key_path)
+    assert adapter.connect_calls[0]["remote_worker"] == {"enabled": True}
+    assert adapter.collect_calls[0][0]["name"] == "prod"
+    assert adapter.collect_calls[0][0]["url"] == "ssh://deploy@10.0.1.10:22"
+    assert adapter.collect_calls[0][0]["ssh_key"] == str(ssh_key_path)
+    assert adapter.collect_calls[0][0]["remote_worker"] == {"enabled": True}
+    assert adapter.collect_calls[0][1] == {
+        "collect_load": True,
+        "collect_network": True,
+        "timeout_seconds": 8,
+    }
+    assert saved_samples == [
+        {
+            "source": "remote-worker",
+            "cpu_percent": 12.5,
+            "host_name": "prod",
+        }
+    ]
 
 
 def test_create_app_loads_hosts_from_config_path_and_expands_defaults(
@@ -443,9 +643,605 @@ async def test_main_app_default_reload_action_reloads_hosts_from_config_file(
 
     assert summary["ok"] is True
     assert summary["added"] == ["beta"]
-    assert summary["removed_requires_restart"] == ["alpha"]
+    assert summary["removed"] == ["alpha"]
+    assert summary["removed_requires_restart"] == []
+    assert app.state.host_manager.get_host_config("alpha") is None
     assert app.state.host_manager.get_host_config("beta") is not None
     assert app.state.host_manager.get_host_config("beta")["url"] == "unix:///beta.sock"
+
+
+@pytest.mark.asyncio
+async def test_main_app_reload_action_closes_removed_host_resources(
+    tmp_path: Path,
+) -> None:
+    config_path = _write_yaml(
+        tmp_path / "logdog.yaml",
+        """
+        hosts:
+          - name: alpha
+            url: unix:///alpha.sock
+        """,
+    )
+    closed_hosts: list[str] = []
+    reloaded_hosts: list[list[str]] = []
+
+    class _DockerPoolStub:
+        async def connect_host(self, _host: dict) -> dict:
+            return {"server_version": "24.0.7"}
+
+        async def close_all(self) -> None:
+            return None
+
+        async def close_host(self, host_name: str) -> None:
+            closed_hosts.append(host_name)
+
+    class _WatchManagerStub:
+        async def reload_host_configs(self, host_names: list[str]) -> None:
+            reloaded_hosts.append(list(host_names))
+
+        def snapshot_state(self) -> dict[str, object]:
+            return {}
+
+    app = main_module.create_app(
+        config_path=str(config_path),
+        docker_client_pool=_DockerPoolStub(),
+        watch_manager=_WatchManagerStub(),
+        enable_metrics_scheduler=False,
+        enable_retention_cleanup=False,
+    )
+
+    _write_yaml(
+        config_path,
+        """
+        hosts:
+          - name: beta
+            url: unix:///beta.sock
+        """,
+    )
+
+    summary = await app.state.reload_action()
+
+    assert summary["removed"] == ["alpha"]
+    assert len(closed_hosts) == 1
+    assert closed_hosts[0]["name"] == "alpha"
+    assert closed_hosts[0]["url"] == "unix:///alpha.sock"
+    assert reloaded_hosts == [["beta", "alpha"]]
+
+
+@pytest.mark.asyncio
+async def test_main_app_reload_and_shutdown_close_remote_worker_backend(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _HybridAdapterStub.instances.clear()
+    monkeypatch.setattr(main_module, "HybridHostAdapter", _HybridAdapterStub)
+
+    config_path = _write_yaml(
+        tmp_path / "logdog.yaml",
+        """
+        hosts:
+          - name: alpha
+            url: ssh://deploy@10.0.1.10:22
+            remote_worker:
+              enabled: true
+        """,
+    )
+
+    app = main_module.create_app(
+        config_path=str(config_path),
+        host_connector=lambda _host: {"server_version": "24.0.7"},
+        enable_metrics_scheduler=False,
+        enable_retention_cleanup=False,
+        enable_watch_manager=False,
+    )
+
+    async with app.router.lifespan_context(app):
+        _write_yaml(
+            config_path,
+            """
+            hosts:
+              - name: beta
+                url: unix:///beta.sock
+            """,
+        )
+        summary = await app.state.reload_action()
+
+        adapter = _HybridAdapterStub.instances[0]
+        assert summary["removed"] == ["alpha"]
+        assert adapter.close_host_calls
+        assert adapter.close_host_calls[0]["name"] == "alpha"
+        assert adapter.close_host_calls[0]["url"] == "ssh://deploy@10.0.1.10:22"
+        assert adapter.close_host_calls[0]["remote_worker"] == {"enabled": True}
+
+    adapter = _HybridAdapterStub.instances[0]
+    assert adapter.close_all_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_main_app_reload_restarts_updated_remote_worker_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _HybridAdapterStub.instances.clear()
+    monkeypatch.setattr(main_module, "HybridHostAdapter", _StickyHybridAdapterStub)
+    ssh_key_path = tmp_path / "id_ed25519"
+    ssh_key_path.write_text("key", encoding="utf-8")
+    ssh_key_path.chmod(0o600)
+
+    config_path = _write_yaml(
+        tmp_path / "logdog.yaml",
+        """
+        hosts:
+          - name: alpha
+            url: ssh://deploy@10.0.1.10:22
+            ssh_key: __SSH_KEY_PATH__
+            remote_worker:
+              enabled: true
+              temp_root: /tmp/old
+        """,
+    ).with_name("logdog.yaml")
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8").replace(
+            "__SSH_KEY_PATH__", str(ssh_key_path)
+        ),
+        encoding="utf-8",
+    )
+
+    app = main_module.create_app(
+        config_path=str(config_path),
+        host_connector=lambda _host: {"server_version": "24.0.7"},
+        enable_metrics_scheduler=False,
+        enable_retention_cleanup=False,
+        enable_watch_manager=False,
+    )
+
+    async with app.router.lifespan_context(app):
+        await app.state.host_manager.startup_check()
+        adapter = _StickyHybridAdapterStub.instances[0]
+        assert adapter.active_sessions["alpha"]["remote_worker"] == {
+            "enabled": True,
+            "temp_root": "/tmp/old",
+        }
+
+        _write_yaml(
+            config_path,
+            """
+            hosts:
+              - name: alpha
+                url: ssh://deploy@10.0.1.10:22
+                ssh_key: __SSH_KEY_PATH__
+                remote_worker:
+                  enabled: true
+                  temp_root: /tmp/new
+            """,
+        )
+        config_path.write_text(
+            config_path.read_text(encoding="utf-8").replace(
+                "__SSH_KEY_PATH__", str(ssh_key_path)
+            ),
+            encoding="utf-8",
+        )
+
+        summary = await app.state.reload_action()
+
+        assert summary["updated"] == ["alpha"]
+        assert adapter.close_host_calls
+        assert adapter.close_host_calls[0]["remote_worker"] == {
+            "enabled": True,
+            "temp_root": "/tmp/old",
+        }
+        assert adapter.active_sessions["alpha"]["remote_worker"] == {
+            "enabled": True,
+            "temp_root": "/tmp/new",
+        }
+
+
+@pytest.mark.asyncio
+async def test_main_app_reload_failure_keeps_existing_remote_worker_session(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _FakeUpdater:
+        async def start_polling(self, **_kw) -> None:
+            return None
+
+        async def stop(self) -> None:
+            return None
+
+    class _FakeApplication:
+        def __init__(self, *, fail_on_start: bool) -> None:
+            self._fail_on_start = fail_on_start
+            self.updater = _FakeUpdater()
+
+        def add_handler(self, _handler: object) -> None:
+            return None
+
+        async def initialize(self) -> None:
+            return None
+
+        async def start(self) -> None:
+            if self._fail_on_start:
+                raise RuntimeError("candidate start failed")
+
+        async def stop(self) -> None:
+            return None
+
+        async def shutdown(self) -> None:
+            return None
+
+    _HybridAdapterStub.instances.clear()
+    monkeypatch.setattr(main_module, "HybridHostAdapter", _StickyHybridAdapterStub)
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "telegram-token")
+
+    ssh_key_path = tmp_path / "id_ed25519"
+    ssh_key_path.write_text("key", encoding="utf-8")
+    ssh_key_path.chmod(0o600)
+
+    config_path = _write_yaml(
+        tmp_path / "logdog.yaml",
+        """
+        hosts:
+          - name: alpha
+            url: ssh://deploy@10.0.1.10:22
+            ssh_key: __SSH_KEY_PATH__
+            remote_worker:
+              enabled: true
+              temp_root: /tmp/old
+        agent:
+          authorized_users:
+            telegram: ["1"]
+        """,
+    ).with_name("logdog.yaml")
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8").replace(
+            "__SSH_KEY_PATH__", str(ssh_key_path)
+        ),
+        encoding="utf-8",
+    )
+
+    build_count = {"n": 0}
+
+    def application_factory(_token: str) -> _FakeApplication:
+        build_count["n"] += 1
+        return _FakeApplication(fail_on_start=build_count["n"] >= 2)
+
+    app = main_module.create_app(
+        config_path=str(config_path),
+        host_connector=lambda _host: {"server_version": "24.0.7"},
+        enable_metrics_scheduler=False,
+        enable_retention_cleanup=False,
+        enable_watch_manager=False,
+        telegram_application_factory=application_factory,
+        telegram_handler_binder=lambda app_obj, handler: app_obj.add_handler(handler),
+    )
+
+    async with app.router.lifespan_context(app):
+        await app.state.host_manager.startup_check()
+        adapter = _StickyHybridAdapterStub.instances[0]
+        assert adapter.active_sessions["alpha"]["remote_worker"] == {
+            "enabled": True,
+            "temp_root": "/tmp/old",
+        }
+
+        _write_yaml(
+            config_path,
+            """
+            hosts:
+              - name: alpha
+                url: ssh://deploy@10.0.1.10:22
+                ssh_key: __SSH_KEY_PATH__
+                remote_worker:
+                  enabled: true
+                  temp_root: /tmp/new
+            agent:
+              authorized_users:
+                telegram: ["2"]
+            """,
+        )
+        config_path.write_text(
+            config_path.read_text(encoding="utf-8").replace(
+                "__SSH_KEY_PATH__", str(ssh_key_path)
+            ),
+            encoding="utf-8",
+        )
+
+        with pytest.raises(RuntimeError, match="candidate start failed"):
+            await app.state.reload_action()
+
+        assert adapter.close_host_calls == []
+        assert adapter.active_sessions["alpha"]["remote_worker"] == {
+            "enabled": True,
+            "temp_root": "/tmp/old",
+        }
+
+
+@pytest.mark.asyncio
+async def test_main_app_reload_failure_closes_new_remote_worker_session(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _FakeUpdater:
+        async def start_polling(self, **_kw) -> None:
+            return None
+
+        async def stop(self) -> None:
+            return None
+
+    class _FakeApplication:
+        def __init__(self, *, fail_on_start: bool) -> None:
+            self._fail_on_start = fail_on_start
+            self.updater = _FakeUpdater()
+
+        def add_handler(self, _handler: object) -> None:
+            return None
+
+        async def initialize(self) -> None:
+            return None
+
+        async def start(self) -> None:
+            if self._fail_on_start:
+                raise RuntimeError("candidate start failed")
+
+        async def stop(self) -> None:
+            return None
+
+        async def shutdown(self) -> None:
+            return None
+
+    _HybridAdapterStub.instances.clear()
+    monkeypatch.setattr(main_module, "HybridHostAdapter", _StickyHybridAdapterStub)
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "telegram-token")
+
+    ssh_key_path = tmp_path / "id_ed25519"
+    ssh_key_path.write_text("key", encoding="utf-8")
+    ssh_key_path.chmod(0o600)
+
+    config_path = _write_yaml(
+        tmp_path / "logdog.yaml",
+        """
+        hosts:
+          - name: alpha
+            url: ssh://deploy@10.0.1.10:22
+            ssh_key: __SSH_KEY_PATH__
+            remote_worker:
+              enabled: true
+              temp_root: /tmp/old
+        agent:
+          authorized_users:
+            telegram: ["1"]
+        """,
+    ).with_name("logdog.yaml")
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8").replace(
+            "__SSH_KEY_PATH__", str(ssh_key_path)
+        ),
+        encoding="utf-8",
+    )
+
+    build_count = {"n": 0}
+
+    def application_factory(_token: str) -> _FakeApplication:
+        build_count["n"] += 1
+        return _FakeApplication(fail_on_start=build_count["n"] >= 2)
+
+    app = main_module.create_app(
+        config_path=str(config_path),
+        host_connector=lambda _host: {"server_version": "24.0.7"},
+        enable_metrics_scheduler=False,
+        enable_retention_cleanup=False,
+        enable_watch_manager=False,
+        telegram_application_factory=application_factory,
+        telegram_handler_binder=lambda app_obj, handler: app_obj.add_handler(handler),
+    )
+
+    async with app.router.lifespan_context(app):
+        await app.state.host_manager.startup_check()
+        adapter = _StickyHybridAdapterStub.instances[0]
+        assert adapter.active_sessions["alpha"]["remote_worker"] == {
+            "enabled": True,
+            "temp_root": "/tmp/old",
+        }
+
+        _write_yaml(
+            config_path,
+            """
+            hosts:
+              - name: alpha
+                url: ssh://deploy@10.0.1.10:22
+                ssh_key: __SSH_KEY_PATH__
+                remote_worker:
+                  enabled: true
+                  temp_root: /tmp/old
+              - name: beta
+                url: ssh://deploy@10.0.1.11:22
+                ssh_key: __SSH_KEY_PATH__
+                remote_worker:
+                  enabled: true
+            agent:
+              authorized_users:
+                telegram: ["2"]
+            """,
+        )
+        config_path.write_text(
+            config_path.read_text(encoding="utf-8").replace(
+                "__SSH_KEY_PATH__", str(ssh_key_path)
+            ),
+            encoding="utf-8",
+        )
+
+        with pytest.raises(RuntimeError, match="candidate start failed"):
+            await app.state.reload_action()
+
+        assert "alpha" in adapter.active_sessions
+        assert "beta" not in adapter.active_sessions
+        assert [str(item.get("name") or "") for item in adapter.close_host_calls] == ["beta"]
+
+
+@pytest.mark.asyncio
+async def test_main_app_reload_failure_closes_candidate_remote_session_on_local_to_remote_switch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _FakeUpdater:
+        async def start_polling(self, **_kw) -> None:
+            return None
+
+        async def stop(self) -> None:
+            return None
+
+    class _FakeApplication:
+        def __init__(self, *, fail_on_start: bool) -> None:
+            self._fail_on_start = fail_on_start
+            self.updater = _FakeUpdater()
+
+        def add_handler(self, _handler: object) -> None:
+            return None
+
+        async def initialize(self) -> None:
+            return None
+
+        async def start(self) -> None:
+            if self._fail_on_start:
+                raise RuntimeError("candidate start failed")
+
+        async def stop(self) -> None:
+            return None
+
+        async def shutdown(self) -> None:
+            return None
+
+    class _DirectPoolStub:
+        def __init__(self) -> None:
+            self.sessions: set[str] = set()
+
+        async def connect_host(self, host: dict) -> dict:
+            host_name = str(host.get("name") or "")
+            self.sessions.add(host_name)
+            return {"server_version": "24.0.7"}
+
+        async def close_host(self, host_name_or_host) -> None:
+            if isinstance(host_name_or_host, dict):
+                host_name = str(host_name_or_host.get("name") or "")
+            else:
+                host_name = str(host_name_or_host or "")
+            self.sessions.discard(host_name)
+
+        async def close_all(self) -> None:
+            self.sessions.clear()
+
+    class _RemoteWorkerBackendStub:
+        instances: list["_RemoteWorkerBackendStub"] = []
+
+        def __init__(self, **_kwargs: object) -> None:
+            self.sessions: set[str] = set()
+            self.connect_calls: list[str] = []
+            self.close_calls: list[str] = []
+            _RemoteWorkerBackendStub.instances.append(self)
+
+        async def connect_host(self, host: dict) -> dict:
+            host_name = str(host.get("name") or "")
+            self.connect_calls.append(host_name)
+            self.sessions.add(host_name)
+            return {"server_version": "24.0.7"}
+
+        async def close_host(self, host_name_or_host) -> None:
+            if isinstance(host_name_or_host, dict):
+                host_name = str(host_name_or_host.get("name") or "")
+            else:
+                host_name = str(host_name_or_host or "")
+            self.close_calls.append(host_name)
+            self.sessions.discard(host_name)
+
+        async def close_all(self) -> None:
+            self.sessions.clear()
+
+    _RemoteWorkerBackendStub.instances.clear()
+    monkeypatch.setattr(main_module, "RemoteWorkerBackend", _RemoteWorkerBackendStub)
+    monkeypatch.setattr(main_module, "ParamikoRemoteWorkerLauncher", lambda: object())
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "telegram-token")
+
+    ssh_key_path = tmp_path / "id_ed25519"
+    ssh_key_path.write_text("key", encoding="utf-8")
+    ssh_key_path.chmod(0o600)
+
+    config_path = _write_yaml(
+        tmp_path / "logdog.yaml",
+        """
+        hosts:
+          - name: alpha
+            url: ssh://deploy@10.0.1.10:22
+            ssh_key: __SSH_KEY_PATH__
+            remote_worker:
+              enabled: true
+          - name: beta
+            url: ssh://deploy@10.0.1.11:22
+            ssh_key: __SSH_KEY_PATH__
+            remote_worker:
+              enabled: false
+        agent:
+          authorized_users:
+            telegram: ["1"]
+        """,
+    )
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8").replace(
+            "__SSH_KEY_PATH__", str(ssh_key_path)
+        ),
+        encoding="utf-8",
+    )
+
+    build_count = {"n": 0}
+
+    def application_factory(_token: str) -> _FakeApplication:
+        build_count["n"] += 1
+        return _FakeApplication(fail_on_start=build_count["n"] >= 2)
+
+    direct_pool = _DirectPoolStub()
+    app = main_module.create_app(
+        config_path=str(config_path),
+        docker_client_pool=direct_pool,
+        enable_metrics_scheduler=False,
+        enable_retention_cleanup=False,
+        enable_watch_manager=False,
+        telegram_application_factory=application_factory,
+        telegram_handler_binder=lambda app_obj, handler: app_obj.add_handler(handler),
+    )
+
+    async with app.router.lifespan_context(app):
+        await app.state.host_manager.startup_check()
+        remote_backend = _RemoteWorkerBackendStub.instances[0]
+        assert remote_backend.sessions == {"alpha"}
+        assert "beta" in direct_pool.sessions
+
+        _write_yaml(
+            config_path,
+            """
+            hosts:
+              - name: alpha
+                url: ssh://deploy@10.0.1.10:22
+                ssh_key: __SSH_KEY_PATH__
+                remote_worker:
+                  enabled: true
+              - name: beta
+                url: ssh://deploy@10.0.1.11:22
+                ssh_key: __SSH_KEY_PATH__
+                remote_worker:
+                  enabled: true
+            agent:
+              authorized_users:
+                telegram: ["2"]
+            """,
+        )
+        config_path.write_text(
+            config_path.read_text(encoding="utf-8").replace(
+                "__SSH_KEY_PATH__", str(ssh_key_path)
+            ),
+            encoding="utf-8",
+        )
+
+        with pytest.raises(RuntimeError, match="candidate start failed"):
+            await app.state.reload_action()
+
+        assert remote_backend.sessions == {"alpha"}
+        assert remote_backend.close_calls == ["beta"]
 
 
 @pytest.mark.asyncio

@@ -16,6 +16,30 @@ _DEFAULT_EXEC_TIMEOUT_SECONDS = 30
 _MAX_EXEC_COMMAND_CHARS = 1000
 
 
+def _start_leaked_client_cleanup(
+    *,
+    created: list[Any],
+    thread_done: threading.Event,
+    wait_timeout_seconds: float,
+) -> None:
+    def _cleanup() -> None:
+        thread_done.wait(timeout=max(0.0, float(wait_timeout_seconds)))
+        for client in list(created):
+            try:
+                close_fn = getattr(client, "close", None)
+                if callable(close_fn):
+                    close_fn()
+            except Exception:  # noqa: BLE001
+                pass
+            _force_close_ssh_transport(client)
+
+    threading.Thread(
+        target=_cleanup,
+        name="docker-leaked-client-cleanup",
+        daemon=True,
+    ).start()
+
+
 async def _run_in_daemon_thread(fn: Any) -> Any:
     to_thread = getattr(asyncio, "to_thread", None)
     if callable(to_thread) and getattr(to_thread, "__module__", "") != "asyncio.threads":
@@ -278,7 +302,7 @@ class DockerClientPool:
         )
         self._stream_queue_maxsize = int(stream_queue_maxsize)
         self._clients: dict[str, _PooledClient] = {}
-        self._active_streams: dict[int, _StreamHandle] = {}
+        self._active_streams: dict[int, tuple[str, _StreamHandle]] = {}
         self._lock = asyncio.Lock()
 
     async def connect_host(self, host: dict[str, Any]) -> dict[str, Any]:
@@ -382,7 +406,7 @@ class DockerClientPool:
 
     async def close_all(self) -> None:
         async with self._lock:
-            streams = list(self._active_streams.values())
+            streams = [stream for _key, stream in self._active_streams.values()]
             self._active_streams = {}
             entries = list(self._clients.values())
             self._clients = {}
@@ -390,6 +414,29 @@ class DockerClientPool:
             await stream.aclose()
         for entry in entries:
             await self._close_client(entry.client)
+
+    async def close_host(self, host_name_or_host: Any) -> None:
+        key = _normalize_client_key(host_name_or_host)
+        streams: list[_StreamHandle] = []
+        client: Any | None = None
+        async with self._lock:
+            stale_stream_ids = [
+                stream_id
+                for stream_id, (stream_key, _stream) in self._active_streams.items()
+                if stream_key == key
+            ]
+            for stream_id in stale_stream_ids:
+                stream_key, stream = self._active_streams.pop(stream_id)
+                if stream_key == key:
+                    streams.append(stream)
+            entry = self._clients.pop(key, None)
+            if entry is not None:
+                client = entry.client
+
+        for stream in streams:
+            await stream.aclose()
+        if client is not None:
+            await self._close_client(client)
 
     async def _run(self, host: dict[str, Any], operation: Any) -> Any:
         timeout_seconds = _docker_timeout_seconds(host)
@@ -404,6 +451,7 @@ class DockerClientPool:
             raise
 
     async def _open_stream(self, host: dict[str, Any], operation: Any) -> _StreamHandle:
+        key = _client_key(host)
         stream = await _open_stream_handle(
             host,
             operation,
@@ -412,7 +460,7 @@ class DockerClientPool:
             queue_maxsize=self._stream_queue_maxsize,
         )
         async with self._lock:
-            self._active_streams[id(stream)] = stream
+            self._active_streams[id(stream)] = (key, stream)
         return stream
 
     async def _discard_stream(self, stream: _StreamHandle) -> None:
@@ -493,22 +541,11 @@ class DockerClientPool:
                 timeout=timeout_seconds,
             )
         except asyncio.TimeoutError:
-            async def _cleanup_leaked() -> None:
-                # Wait for the background thread to finish so `created` is
-                # populated, then close the leaked client.
-                await asyncio.get_running_loop().run_in_executor(
-                    None, lambda: thread_done.wait(timeout=max(timeout_seconds * 10, 60.0)),
-                )
-                for c in created:
-                    try:
-                        close_fn = getattr(c, "close", None)
-                        if callable(close_fn):
-                            close_fn()
-                    except Exception:  # noqa: BLE001
-                        pass
-                    _force_close_ssh_transport(c)
-
-            asyncio.get_running_loop().create_task(_cleanup_leaked())
+            _start_leaked_client_cleanup(
+                created=created,
+                thread_done=thread_done,
+                wait_timeout_seconds=max(timeout_seconds * 10, 60.0),
+            )
             raise
         entry = _PooledClient(kwargs=kwargs, client=client, last_used_at=now)
         self._clients[key] = entry
@@ -735,20 +772,11 @@ async def _open_stream_handle(
             timeout=timeout_seconds,
         )
     except asyncio.TimeoutError:
-        async def _cleanup_leaked() -> None:
-            await asyncio.get_running_loop().run_in_executor(
-                None, lambda: thread_done.wait(timeout=max(timeout_seconds * 10, 60.0)),
-            )
-            for c in created:
-                try:
-                    close_fn = getattr(c, "close", None)
-                    if callable(close_fn):
-                        close_fn()
-                except Exception:  # noqa: BLE001
-                    pass
-                _force_close_ssh_transport(c)
-
-        asyncio.get_running_loop().create_task(_cleanup_leaked())
+        _start_leaked_client_cleanup(
+            created=created,
+            thread_done=thread_done,
+            wait_timeout_seconds=max(timeout_seconds * 10, 60.0),
+        )
         raise
     return _StreamHandle(
         client=client,
@@ -876,6 +904,12 @@ def _client_key(host: dict[str, Any]) -> str:
     if name != "":
         return name
     return str(host.get("url") or "").strip()
+
+
+def _normalize_client_key(host_name_or_host: Any) -> str:
+    if isinstance(host_name_or_host, dict):
+        return _client_key(host_name_or_host)
+    return str(host_name_or_host or "").strip()
 
 
 def _container_id(container: dict[str, Any]) -> str:
@@ -1165,13 +1199,12 @@ def _raise_if_exec_wrapper_dependency_missing(
     stderr_text: str,
     exit_code: int,
 ) -> None:
-    if int(exit_code) != 127:
-        return
+    _ = int(exit_code)
     combined = "\n".join(
         part for part in (stdout_text.strip(), stderr_text.strip()) if part != ""
     )
     normalized = combined.lower()
-    if "sleep: not found" in normalized:
+    if "sleep: not found" in normalized and ("sh:" in normalized or "/bin/sh" in normalized):
         raise RuntimeError(
             "exec_container timeout wrapper requires /bin/sh and sleep inside the target container"
         )

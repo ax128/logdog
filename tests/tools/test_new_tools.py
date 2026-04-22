@@ -3,6 +3,7 @@ get_storm_events, and exec_container."""
 from __future__ import annotations
 
 import json
+import time
 from copy import deepcopy
 from typing import Any
 
@@ -11,6 +12,8 @@ import pytest
 from logdog.llm.permissions import issue_approval_token
 from logdog.llm.tool_types import ToolResult
 from logdog.llm.tools import create_tool_registry
+
+_CURRENT_TS = int(time.time())
 
 
 # ---------------------------------------------------------------------------
@@ -342,7 +345,7 @@ async def test_exec_container_runs_command_when_approved() -> None:
         "exec_container",
         arguments,
         secret="test-secret",
-        issued_at=2_000_000_000,
+        issued_at=_CURRENT_TS,
         ttl_seconds=300,
     )
 
@@ -389,7 +392,7 @@ async def test_exec_container_requires_command() -> None:
         "exec_container",
         arguments,
         secret="test-secret",
-        issued_at=2_000_000_000,
+        issued_at=_CURRENT_TS,
         ttl_seconds=300,
     )
 
@@ -438,7 +441,7 @@ async def test_exec_container_passes_timeout_seconds_to_exec_fn() -> None:
         "exec_container",
         arguments,
         secret="test-secret",
-        issued_at=2_000_000_000,
+        issued_at=_CURRENT_TS,
         ttl_seconds=300,
     )
 
@@ -495,7 +498,7 @@ async def test_exec_container_uses_default_timeout_seconds_when_omitted() -> Non
         "exec_container",
         arguments,
         secret="test-secret",
-        issued_at=2_000_000_000,
+        issued_at=_CURRENT_TS,
         ttl_seconds=300,
     )
 
@@ -527,7 +530,7 @@ async def test_exec_container_rejects_timeout_seconds_above_limit() -> None:
         "exec_container",
         arguments,
         secret="test-secret",
-        issued_at=2_000_000_000,
+        issued_at=_CURRENT_TS,
         ttl_seconds=300,
     )
 
@@ -551,7 +554,7 @@ async def test_exec_container_rejects_non_positive_timeout_seconds() -> None:
         "exec_container",
         arguments,
         secret="test-secret",
-        issued_at=2_000_000_000,
+        issued_at=_CURRENT_TS,
         ttl_seconds=300,
     )
 
@@ -575,7 +578,7 @@ async def test_exec_container_rejects_overlong_command() -> None:
         "exec_container",
         arguments,
         secret="test-secret",
-        issued_at=2_000_000_000,
+        issued_at=_CURRENT_TS,
         ttl_seconds=300,
     )
 
@@ -598,7 +601,7 @@ async def test_exec_container_rejects_expired_approval_token() -> None:
         "exec_container",
         arguments,
         secret="test-secret",
-        issued_at=100,
+        issued_at=_CURRENT_TS - 3_600,
         ttl_seconds=1,
     )
 
@@ -621,7 +624,7 @@ async def test_exec_container_rejects_tampered_approval_token() -> None:
         "exec_container",
         arguments,
         secret="test-secret",
-        issued_at=2_000_000_000,
+        issued_at=_CURRENT_TS,
         ttl_seconds=300,
     )
     arguments["command"] = "echo tampered"

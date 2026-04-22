@@ -19,6 +19,26 @@ import paramiko
 logger = logging.getLogger(__name__)
 
 DEFAULT_SSH_TIMEOUT_SECONDS = 8
+
+_FALSEY_STRINGS = frozenset({"", "0", "false", "no", "off"})
+_TRUTHY_STRINGS = frozenset({"1", "true", "yes", "on"})
+
+
+def _coerce_bool_like(value: Any, *, default: bool) -> bool:
+    if value is None:
+        return bool(default)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in _FALSEY_STRINGS:
+            return False
+        if normalized in _TRUTHY_STRINGS:
+            return True
+    return bool(value)
+
 HOST_METRICS_REMOTE_COMMAND = """python3 - <<'PY'
 import json
 import os
@@ -354,7 +374,10 @@ def _collect_remote_host_metrics_sync(
     port = int(parsed.port or 22)
     timeout = max(1.0, float(timeout_seconds))
     ssh_key = str(host_cfg.get("ssh_key") or "").strip()
-    strict_host_key = bool(host_cfg.get("strict_host_key", True))
+    strict_host_key = _coerce_bool_like(
+        host_cfg.get("strict_host_key"),
+        default=True,
+    )
     command = HOST_METRICS_REMOTE_COMMAND
     _assert_command_allowed(command)
 

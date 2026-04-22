@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 import pytest
 
 from logdog.llm.permissions import (
@@ -8,6 +10,8 @@ from logdog.llm.permissions import (
     issue_approval_token_for_policy,
     load_permission_policy,
 )
+
+_CURRENT_TS = int(time.time())
 
 
 def test_restart_container_requires_allowlisted_host() -> None:
@@ -66,7 +70,7 @@ def test_restart_container_accepts_valid_approval_token() -> None:
         "restart_container",
         arguments,
         secret="test-secret",
-        issued_at=2_000_000_000,
+        issued_at=_CURRENT_TS,
         ttl_seconds=300,
     )
 
@@ -105,7 +109,7 @@ def test_restart_container_rejects_expired_approval_token() -> None:
         "restart_container",
         arguments,
         secret="test-secret",
-        issued_at=100,
+        issued_at=_CURRENT_TS - 3_600,
         ttl_seconds=1,
     )
 
@@ -133,7 +137,7 @@ def test_restart_container_rejects_tampered_approval_token() -> None:
         "restart_container",
         arguments,
         secret="test-secret",
-        issued_at=2_000_000_000,
+        issued_at=_CURRENT_TS,
         ttl_seconds=300,
     )
     arguments["timeout"] = 15
@@ -205,7 +209,7 @@ def test_approval_token_cannot_be_reused_across_tools() -> None:
         "exec_container",
         arguments,
         secret="test-secret",
-        issued_at=2_000_000_000,
+        issued_at=_CURRENT_TS,
         ttl_seconds=300,
     )
 

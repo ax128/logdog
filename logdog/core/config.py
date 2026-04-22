@@ -157,8 +157,21 @@ def merge_host_config(defaults: dict | None, host: dict | None) -> dict:
     else:
         merged.pop("notify", None)
 
+    watch = _merge_watch(defaults.get("watch"), host.get("watch"))
+    if watch:
+        merged["watch"] = watch
+    else:
+        merged.pop("watch", None)
+
     for key, value in host.items():
-        if key in {"containers", "rules", "notify", "schedules", "schedules_mode"}:
+        if key in {
+            "containers",
+            "rules",
+            "notify",
+            "watch",
+            "schedules",
+            "schedules_mode",
+        }:
             continue
         merged[key] = deepcopy(value)
 
@@ -451,6 +464,14 @@ def _merge_containers(
 
 def _copy_sequence(values: list[Any]) -> list[Any]:
     return [deepcopy(entry) for entry in values]
+
+
+def _merge_watch(default_watch: dict | None, host_watch: dict | None) -> dict:
+    default_watch = _ensure_dict(default_watch, "watch", "defaults")
+    host_watch = _ensure_dict(host_watch, "watch", "host")
+    merged: dict[str, Any] = deepcopy(default_watch)
+    merged.update(deepcopy(host_watch))
+    return merged
 
 
 def _merge_rules(default_rules: dict | None, host_rules: dict | None) -> dict:

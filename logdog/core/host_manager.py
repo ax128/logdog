@@ -129,17 +129,23 @@ class HostManager:
             await self._connect_host(name)
             added.append(name)
 
-        removed_requires_restart = sorted(existing_names - incoming_names)
-        for name in removed_requires_restart:
-            self._logger.warning(
-                "Host [%s] removed from config but cannot be hot-unloaded — restart required to release resources",
-                name,
-            )
+        removed = sorted(existing_names - incoming_names)
+        for name in removed:
+            state = self._states.get(name)
+            if state is not None:
+                old_status = state.status
+                state.status = "removed"
+                state.last_error = None
+                state.last_error_kind = None
+                await self._finalize_connect_result(state, old_status)
+            self._hosts.pop(name, None)
+            self._states.pop(name, None)
 
         return {
             "added": added,
             "updated": updated,
-            "removed_requires_restart": removed_requires_restart,
+            "removed": removed,
+            "removed_requires_restart": [],
         }
 
     def snapshot_state(self) -> dict[str, Any]:

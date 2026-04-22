@@ -5,7 +5,7 @@ import inspect
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, FastAPI, Header, HTTPException, Query
 
 
 ReloadAction = Callable[[], Awaitable[dict[str, Any] | None] | dict[str, Any] | None]
@@ -43,6 +43,10 @@ StormEventStatsAction = Callable[
 ]
 IssueWsTicketAction = Callable[
     [str], Awaitable[dict[str, Any] | None] | dict[str, Any] | None
+]
+IssueApprovalTokenAction = Callable[
+    [str, dict[str, Any]],
+    Awaitable[dict[str, Any] | None] | dict[str, Any] | None,
 ]
 
 
@@ -301,6 +305,25 @@ async def _run_issue_ws_ticket_action(
     return result
 
 
+async def _run_issue_approval_token_action(
+    issue_approval_token_action: IssueApprovalTokenAction | None,
+    *,
+    tool_name: str,
+    arguments: dict[str, Any],
+) -> dict[str, Any]:
+    if issue_approval_token_action is None:
+        raise RuntimeError("issue_approval_token_action is not configured")
+
+    result = issue_approval_token_action(str(tool_name), dict(arguments))
+    if inspect.isawaitable(result):
+        result = await result
+    if result is None:
+        raise RuntimeError("issue_approval_token_action returned None")
+    if not isinstance(result, dict):
+        raise RuntimeError("issue_approval_token_action must return dict or None")
+    return result
+
+
 def _build_auth_handlers(
     *,
     web_auth_token: str,
@@ -340,6 +363,7 @@ def create_api_router(
     web_admin_token: str,
     reload_action: ReloadAction | None = None,
     issue_ws_ticket_action: IssueWsTicketAction | None = None,
+    issue_approval_token_action: IssueApprovalTokenAction | None = None,
     list_send_failed_action: ListSendFailedAction | None = None,
     list_hosts_action: ListHostsAction | None = None,
     list_containers_action: ListContainersAction | None = None,
@@ -492,6 +516,43 @@ def create_api_router(
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(status_code=503, detail="issue ws ticket failed") from exc
 
+    async def issue_approval_token(
+        payload: dict[str, Any] | None = Body(default=None),
+        _: None = Depends(require_admin),
+    ) -> dict[str, Any]:
+        body = payload if isinstance(payload, dict) else {}
+        tool_name = str(body.get("tool") or body.get("tool_name") or "").strip()
+        if tool_name == "":
+            raise HTTPException(status_code=400, detail="tool is required")
+        arguments = body.get("arguments")
+        if not isinstance(arguments, dict):
+            raise HTTPException(status_code=400, detail="arguments must be an object")
+        try:
+            return await _run_issue_approval_token_action(
+                issue_approval_token_action,
+                tool_name=tool_name,
+                arguments=arguments,
+            )
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc) or "forbidden") from exc
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=str(exc) or "invalid request",
+            ) from exc
+        except RuntimeError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail=str(exc) or "service unavailable",
+            ) from exc
+        except HTTPException:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(
+                status_code=503,
+                detail="issue approval token failed",
+            ) from exc
+
     async def list_storm_events(
         phase: str | None = Query(default=None),
         category: str | None = Query(default=None),
@@ -541,6 +602,7 @@ def create_api_router(
         methods=["GET"],
     )
     router.add_api_route("/api/ws-ticket", issue_ws_ticket, methods=["POST"])
+    router.add_api_route("/api/approval-token", issue_approval_token, methods=["POST"])
     router.add_api_route("/api/mutes", list_mutes, methods=["GET"])
     router.add_api_route("/api/reload", reload_config, methods=["POST"])
     router.add_api_route("/api/send-failed", list_send_failed, methods=["GET"])
@@ -557,6 +619,7 @@ def create_api_app(
     *,
     reload_action: ReloadAction | None = None,
     issue_ws_ticket_action: IssueWsTicketAction | None = None,
+    issue_approval_token_action: IssueApprovalTokenAction | None = None,
     list_send_failed_action: ListSendFailedAction | None = None,
     list_hosts_action: ListHostsAction | None = None,
     list_containers_action: ListContainersAction | None = None,
@@ -575,6 +638,7 @@ def create_api_app(
         web_admin_token=web_admin_token,
         reload_action=reload_action,
         issue_ws_ticket_action=issue_ws_ticket_action,
+        issue_approval_token_action=issue_approval_token_action,
         list_send_failed_action=list_send_failed_action,
         list_hosts_action=list_hosts_action,
         list_containers_action=list_containers_action,

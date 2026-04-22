@@ -49,6 +49,10 @@ from logdog.core.docker_connector import (
 from logdog.core.host_manager import HostManager
 from logdog.core.metrics_writer import MetricsSqliteWriter
 from logdog.llm.agent_runtime import build_chat_runtime
+from logdog.llm.permissions import (
+    issue_approval_token_for_policy,
+    load_permission_policy,
+)
 from logdog.llm.provider import resolve_for_role
 from logdog.llm.tools import create_tool_registry
 from logdog.core.retention_scheduler import RetentionCleanupScheduler
@@ -66,6 +70,11 @@ from logdog.notify.telegram import (
 from logdog.notify.wechat import WechatNotifier
 from logdog.notify.weixin import WeixinNotifier
 from logdog.notify.wecom import WecomNotifier, build_wecom_webhook_sender
+from logdog.remote.host_adapter import HybridHostAdapter
+from logdog.remote.worker_backend import (
+    ParamikoRemoteWorkerLauncher,
+    RemoteWorkerBackend,
+)
 from logdog.web.api import ReloadAction, create_api_router
 from logdog.web.chat import WsTicketStore, create_chat_router
 from logdog.web.frontend import mount_frontend
@@ -84,6 +93,47 @@ DEFAULT_RETENTION_CONFIG: dict[str, int] = {
     "host_metrics_days": 7,
     "storm_days": 14,
 }
+
+
+def _has_remote_worker_hosts(hosts: list[dict[str, Any]] | None) -> bool:
+    if not isinstance(hosts, list):
+        return False
+    for host in hosts:
+        if _uses_remote_worker_backend(host):
+            return True
+    return False
+
+
+def _uses_remote_worker_backend(host: dict[str, Any] | None) -> bool:
+    if not isinstance(host, dict):
+        return False
+    url = str(host.get("url") or "").strip().lower()
+    if not url.startswith("ssh://"):
+        return False
+    remote_worker = host.get("remote_worker")
+    # Default-on for ssh:// hosts (remote worker deployment is the default path).
+    # Opt out explicitly via `remote_worker.enabled: false`.
+    if remote_worker is None:
+        return True
+    if isinstance(remote_worker, bool):
+        return remote_worker
+    if not isinstance(remote_worker, dict):
+        return True
+
+    enabled = remote_worker.get("enabled")
+    if enabled is None:
+        return True
+    if isinstance(enabled, bool):
+        return enabled
+    if isinstance(enabled, (int, float)):
+        return bool(enabled)
+    if isinstance(enabled, str):
+        normalized = enabled.strip().lower()
+        if normalized in {"", "0", "false", "no", "off"}:
+            return False
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+    return bool(enabled)
 
 
 def create_app(
@@ -186,11 +236,32 @@ def create_app(
         ],
     )
 
-    resolved_host_connector = host_connector
-    if resolved_host_connector is None and resolved_docker_client_pool is not None:
+    candidate_hosts_for_backend = hosts
+    if candidate_hosts_for_backend is None and resolved_app_config is not None:
+        candidate_hosts_for_backend = expand_effective_hosts(resolved_app_config)
+    if _has_remote_worker_hosts(candidate_hosts_for_backend):
+        direct_backend = resolved_docker_client_pool
+        if direct_backend is None:
+            direct_backend = DockerClientPool(
+                max_clients=runtime_settings["docker_pool_max_clients"],
+                max_idle_seconds=runtime_settings["docker_pool_max_idle_seconds"],
+            )
+        worker_backend = RemoteWorkerBackend(
+            launcher=ParamikoRemoteWorkerLauncher(),
+        )
+        resolved_docker_client_pool = HybridHostAdapter(
+            direct_backend=direct_backend,
+            worker_backend=worker_backend,
+        )
+
+    if isinstance(resolved_docker_client_pool, HybridHostAdapter):
         resolved_host_connector = resolved_docker_client_pool.connect_host
-    if resolved_host_connector is None:
-        resolved_host_connector = connect_docker_host
+    else:
+        resolved_host_connector = host_connector
+        if resolved_host_connector is None and resolved_docker_client_pool is not None:
+            resolved_host_connector = resolved_docker_client_pool.connect_host
+        if resolved_host_connector is None:
+            resolved_host_connector = connect_docker_host
 
     resolved_wechat_send_func = (
         wechat_send_func if wechat_send_func is not None else wecom_send_func
@@ -508,7 +579,38 @@ def create_app(
             timeout_seconds: int,
         ) -> dict[str, Any]:
             sample: dict[str, Any]
-            if collect_host_metrics_fn is not None:
+            collect_host_metrics_impl = None
+            if resolved_docker_client_pool is not None:
+                # When using HybridHostAdapter (remote worker default for ssh://),
+                # only route host-metrics collection to the adapter for hosts that
+                # are actually handled by the worker backend. For local unix://
+                # hosts, the direct docker backend doesn't implement host metrics.
+                uses_worker_backend = getattr(
+                    resolved_docker_client_pool, "uses_worker_backend", None
+                )
+                if callable(uses_worker_backend) and not bool(
+                    uses_worker_backend(host_cfg)
+                ):
+                    collect_host_metrics_impl = None
+                else:
+                    collect_host_metrics_impl = getattr(
+                        resolved_docker_client_pool,
+                        "collect_host_metrics_for_host",
+                        None,
+                    )
+            if callable(collect_host_metrics_impl):
+                sample = dict(
+                    await _maybe_await(
+                        collect_host_metrics_impl(
+                            host_cfg,
+                            collect_load=bool(collect_load),
+                            collect_network=bool(collect_network),
+                            timeout_seconds=int(timeout_seconds),
+                        )
+                    )
+                    or {}
+                )
+            elif collect_host_metrics_fn is not None:
                 sample = dict(
                     await _maybe_await(
                         collect_host_metrics_fn(
@@ -937,12 +1039,31 @@ def create_app(
             resolved_host_manager, "_on_status_change", None
         )
 
+        snapshot_hosts: dict[str, dict[str, Any]] = {}
+
+        docker_pool_known_hosts_snapshot: dict[str, dict[str, Any]] | None = None
+        if resolved_docker_client_pool is not None:
+            known_hosts = getattr(resolved_docker_client_pool, "_known_hosts", None)
+            if isinstance(known_hosts, dict):
+                docker_pool_known_hosts_snapshot = {
+                    str(name): dict(value)
+                    for name, value in known_hosts.items()
+                    if isinstance(value, dict)
+                }
+
         host_manager_snapshot: dict[str, Any] | None = None
         host_snapshot_fn = getattr(resolved_host_manager, "snapshot_state", None)
         if callable(host_snapshot_fn):
             snapshot_value = host_snapshot_fn()
             if isinstance(snapshot_value, dict):
                 host_manager_snapshot = dict(snapshot_value)
+                raw_snapshot_hosts = host_manager_snapshot.get("hosts")
+                if isinstance(raw_snapshot_hosts, dict):
+                    snapshot_hosts = {
+                        str(name): dict(value)
+                        for name, value in raw_snapshot_hosts.items()
+                        if isinstance(value, dict)
+                    }
 
         watch_manager_snapshot: dict[str, Any] | None = None
         watch_snapshot_fn = getattr(resolved_watch_manager, "snapshot_state", None)
@@ -961,12 +1082,26 @@ def create_app(
         old_host_metrics_scheduler_running = _is_scheduler_running(
             old_host_metrics_scheduler
         )
+        new_hosts: list[dict[str, Any]] = []
 
         try:
             new_app_config = load_app_config(reload_config_path)
             new_runtime_settings = resolve_runtime_settings(new_app_config)
             candidate_host_system_settings = dict(new_runtime_settings["host_system"])
             new_hosts = expand_effective_hosts(new_app_config)
+            changed_host_configs: dict[str, tuple[dict[str, Any], dict[str, Any]]] = {}
+            for host_cfg in new_hosts:
+                host_name = str(host_cfg.get("name") or "").strip()
+                if host_name == "":
+                    continue
+                previous_host = snapshot_hosts.get(host_name)
+                if previous_host is None:
+                    continue
+                if previous_host != host_cfg:
+                    changed_host_configs[host_name] = (
+                        dict(previous_host),
+                        dict(host_cfg),
+                    )
             summary = await resolved_host_manager.reload_hosts(new_hosts)
             active_host_names = {
                 str(item.get("name") or "").strip()
@@ -1125,12 +1260,46 @@ def create_app(
             if resolved_watch_manager is not None and hasattr(
                 resolved_watch_manager, "reload_host_configs"
             ):
-                changed_hosts = list(summary.get("added", [])) + list(
-                    summary.get("updated", [])
+                changed_hosts = (
+                    list(summary.get("added", []))
+                    + list(summary.get("updated", []))
+                    + list(summary.get("removed", []))
                 )
                 await _maybe_await(
                     resolved_watch_manager.reload_host_configs(changed_hosts)
                 )
+
+            if resolved_docker_client_pool is not None and hasattr(
+                resolved_docker_client_pool, "close_host"
+            ):
+                host_snapshots = {}
+                if isinstance(host_manager_snapshot, dict):
+                    snapshot_hosts = host_manager_snapshot.get("hosts")
+                    if isinstance(snapshot_hosts, dict):
+                        host_snapshots = dict(snapshot_hosts)
+                for host_name in list(summary.get("removed", [])):
+                    host_value: Any = host_name
+                    snapshot_host = host_snapshots.get(host_name)
+                    if isinstance(snapshot_host, dict):
+                        host_value = dict(snapshot_host)
+                    await _maybe_await(
+                        resolved_docker_client_pool.close_host(host_value)
+                    )
+
+            if resolved_docker_client_pool is not None and hasattr(
+                resolved_docker_client_pool, "close_host"
+            ):
+                reconnect_host = getattr(resolved_host_manager, "_connect_host", None)
+                for host_name, (previous_host, updated_host) in changed_host_configs.items():
+                    if not _uses_remote_worker_backend(previous_host):
+                        continue
+                    await _maybe_await(
+                        resolved_docker_client_pool.close_host(dict(previous_host))
+                    )
+                    if _uses_remote_worker_backend(updated_host) and callable(
+                        reconnect_host
+                    ):
+                        await _maybe_await(reconnect_host(host_name))
 
             app.state.reload_degraded = None
 
@@ -1159,6 +1328,37 @@ def create_app(
                     logger.exception(
                         "failed to shutdown candidate host metrics scheduler"
                     )
+
+            if new_hosts:
+                candidate_close_hosts: list[dict[str, Any]] = []
+                for host_cfg in new_hosts:
+                    if not isinstance(host_cfg, dict):
+                        continue
+                    if not _uses_remote_worker_backend(host_cfg):
+                        continue
+                    host_name = str(host_cfg.get("name") or "").strip()
+                    if host_name == "":
+                        continue
+                    previous_host = snapshot_hosts.get(host_name)
+                    if _uses_remote_worker_backend(previous_host):
+                        continue
+                    candidate_close_hosts.append(dict(host_cfg))
+
+                close_host = (
+                    getattr(resolved_docker_client_pool, "close_host", None)
+                    if resolved_docker_client_pool is not None
+                    else None
+                )
+                if callable(close_host):
+                    for host_cfg in candidate_close_hosts:
+                        try:
+                            await _maybe_await(close_host(dict(host_cfg)))
+                        except Exception:  # noqa: BLE001
+                            logger.exception(
+                                "failed to cleanup candidate remote worker session host=%s",
+                                host_cfg.get("name"),
+                            )
+                            recovery_errors.append("remote_worker_session_cleanup")
 
             if old_report_scheduler_running and old_report_scheduler is not None:
                 try:
@@ -1209,6 +1409,15 @@ def create_app(
                     logger.exception("failed to restore previous watch manager state")
                     recovery_errors.append("watch_manager_restore")
 
+            if (
+                docker_pool_known_hosts_snapshot is not None
+                and resolved_docker_client_pool is not None
+            ):
+                known_hosts = getattr(resolved_docker_client_pool, "_known_hosts", None)
+                if isinstance(known_hosts, dict):
+                    known_hosts.clear()
+                    known_hosts.update(docker_pool_known_hosts_snapshot)
+
             resolved_notify_router = old_notify_router
             resolved_report_scheduler = old_report_scheduler
             resolved_host_metrics_scheduler = old_host_metrics_scheduler
@@ -1258,11 +1467,50 @@ def create_app(
     def issue_ws_ticket(token_subject: str) -> dict[str, Any]:
         return ws_ticket_store.issue(token_subject)
 
+    def issue_approval_token(
+        tool_name: str,
+        arguments: dict[str, Any],
+    ) -> dict[str, Any]:
+        normalized_tool_name = str(tool_name or "").strip()
+        if normalized_tool_name == "":
+            raise ValueError("tool is required")
+
+        normalized_arguments = dict(arguments or {})
+        host_name = str(normalized_arguments.get("host") or "").strip()
+        if host_name == "":
+            raise ValueError("arguments.host is required")
+
+        permission_policy = load_permission_policy(current_app_config)
+        if normalized_tool_name not in permission_policy.dangerous_tools:
+            raise ValueError(
+                f"tool {normalized_tool_name!r} is not configured as dangerous"
+            )
+        if host_name not in permission_policy.dangerous_host_allowlist:
+            raise PermissionError(f"host {host_name!r} is not in dangerous action allowlist")
+        if str(permission_policy.approval_secret or "").strip() == "":
+            raise RuntimeError("approval_secret is not configured")
+
+        token = issue_approval_token_for_policy(
+            normalized_tool_name,
+            normalized_arguments,
+            policy=permission_policy,
+        )
+        parts = token.split(":", 2)
+        expires_at = int(parts[1]) if len(parts) == 3 else 0
+        return {
+            "tool": normalized_tool_name,
+            "host": host_name,
+            "approval_token": token,
+            "expires_at": expires_at,
+            "ttl_seconds": int(permission_policy.approval_token_ttl_seconds),
+        }
+
     api_router = create_api_router(
         web_auth_token=resolved_web_auth_token,
         web_admin_token=resolved_web_admin_token,
         reload_action=effective_reload_action,
         issue_ws_ticket_action=issue_ws_ticket,
+        issue_approval_token_action=issue_approval_token,
         list_send_failed_action=list_send_failed,
         list_hosts_action=resolved_host_manager.list_host_statuses,
         list_containers_action=list_containers,

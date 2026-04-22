@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from copy import deepcopy
 from typing import Any
 
@@ -10,6 +11,8 @@ import pytest
 from logdog.llm.permissions import issue_approval_token
 from logdog.llm.tool_types import ToolResult
 from logdog.llm.tools import create_tool_registry
+
+_CURRENT_TS = int(time.time())
 
 
 class _HostManagerStub:
@@ -203,7 +206,7 @@ async def test_tool_registry_invokes_all_task6_tools_and_audits_calls() -> None:
         "restart_container",
         restart_arguments,
         secret="test-secret",
-        issued_at=2_000_000_000,
+        issued_at=_CURRENT_TS,
         ttl_seconds=300,
     )
     restarted = await registry["restart_container"].invoke(
@@ -343,7 +346,7 @@ async def test_tool_registry_returns_success_when_audit_write_fails_after_handle
         "restart_container",
         restart_arguments,
         secret="test-secret",
-        issued_at=2_000_000_000,
+        issued_at=_CURRENT_TS,
         ttl_seconds=300,
     )
     result = await registry["restart_container"].invoke(
@@ -395,7 +398,7 @@ async def test_tool_registry_redacts_approval_token_in_audit_payload() -> None:
         "restart_container",
         restart_arguments,
         secret="test-secret",
-        issued_at=2_000_000_000,
+        issued_at=_CURRENT_TS,
         ttl_seconds=300,
     )
 
@@ -441,7 +444,7 @@ async def test_tool_registry_writer_failure_log_does_not_include_approval_token(
         "restart_container",
         restart_arguments,
         secret="test-secret",
-        issued_at=2_000_000_000,
+        issued_at=_CURRENT_TS,
         ttl_seconds=300,
     )
 

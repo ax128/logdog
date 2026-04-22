@@ -45,6 +45,30 @@ def test_summarize_docker_stats_extracts_core_fields() -> None:
     assert out["disk_write"] == 4000
 
 
+def test_summarize_docker_stats_accepts_cli_summary_payload_without_previous() -> None:
+    current = {
+        "cpu_percent": 12.5,
+        "memory_stats": {"usage": 256, "limit": 1024},
+        "networks": {"total": {"rx_bytes": 10, "tx_bytes": 20}},
+        "blkio_stats": {
+            "io_service_bytes_recursive": [
+                {"op": "Read", "value": 5},
+                {"op": "Write", "value": 8},
+            ]
+        },
+    }
+
+    out = summarize_docker_stats(current, previous_stats=None)
+
+    assert out["cpu"] == pytest.approx(12.5)
+    assert out["mem_used"] == 256
+    assert out["mem_limit"] == 1024
+    assert out["net_rx"] == 10
+    assert out["net_tx"] == 20
+    assert out["disk_read"] == 5
+    assert out["disk_write"] == 8
+
+
 @pytest.mark.asyncio
 async def test_metrics_sampler_collect_once_writes_samples_and_skips_failures() -> None:
     written: list[dict] = []
