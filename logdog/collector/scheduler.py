@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+import time
 from typing import Any
 
 _CYCLE_TIMEOUT_SECONDS = 60
@@ -80,19 +81,28 @@ class MetricsSamplingScheduler:
         total = 0
         refresh_connectivity = getattr(self._host_manager, "startup_check", None)
         if callable(refresh_connectivity):
+            refresh_started_at = time.perf_counter()
             try:
                 await asyncio.wait_for(
                     _maybe_await(refresh_connectivity()),
                     timeout=_REFRESH_TIMEOUT_SECONDS,
                 )
+                self._logger.info(
+                    "host connectivity refresh completed duration_ms=%.1f",
+                    _elapsed_ms(refresh_started_at),
+                )
             except asyncio.TimeoutError:
                 self._logger.warning(
                     "host connectivity refresh timed out after %ds, "
-                    "proceeding with stale host statuses",
+                    "proceeding with stale host statuses duration_ms=%.1f",
                     _REFRESH_TIMEOUT_SECONDS,
+                    _elapsed_ms(refresh_started_at),
                 )
             except Exception:  # noqa: BLE001
-                self._logger.exception("host connectivity refresh failed")
+                self._logger.exception(
+                    "host connectivity refresh failed duration_ms=%.1f",
+                    _elapsed_ms(refresh_started_at),
+                )
         statuses = self._host_manager.list_host_statuses()
         for host in statuses:
             if host.get("status") != "connected":
@@ -100,33 +110,63 @@ class MetricsSamplingScheduler:
             host_name = str(host.get("name") or "")
             if host_name == "":
                 continue
+            host_started_at = time.perf_counter()
             try:
-                containers = await _maybe_await(self._list_containers(host_name))
+                list_started_at = time.perf_counter()
+                containers = list(
+                    await _maybe_await(self._list_containers(host_name)) or []
+                )
+                list_duration_ms = _elapsed_ms(list_started_at)
+                sample_started_at = time.perf_counter()
                 count = await self._sampler.sample_host(
                     host_name=host_name,
-                    containers=list(containers or []),
+                    containers=containers,
                 )
+                sample_duration_ms = _elapsed_ms(sample_started_at)
             except Exception:  # noqa: BLE001
                 self._logger.exception(
-                    "metrics sampling host cycle failed host=%s",
+                    "metrics sampling host cycle failed host=%s duration_ms=%.1f",
                     host_name,
+                    _elapsed_ms(host_started_at),
                 )
                 continue
+            self._logger.info(
+                "metrics sampling host completed host=%s containers=%d samples=%d "
+                "list_containers_duration_ms=%.1f sample_host_duration_ms=%.1f "
+                "duration_ms=%.1f",
+                host_name,
+                len(containers),
+                int(count),
+                list_duration_ms,
+                sample_duration_ms,
+                _elapsed_ms(host_started_at),
+            )
             total += int(count)
         return total
 
     async def _run_cycle_job(self) -> None:
+        cycle_started_at = time.perf_counter()
         try:
-            await asyncio.wait_for(
+            total = await asyncio.wait_for(
                 self.run_cycle_once(), timeout=_CYCLE_TIMEOUT_SECONDS
             )
         except asyncio.TimeoutError:
             self._logger.warning(
-                "metrics sampling cycle timed out after %ds",
+                "metrics sampling cycle timed out after %ds duration_ms=%.1f",
                 _CYCLE_TIMEOUT_SECONDS,
+                _elapsed_ms(cycle_started_at),
             )
         except Exception:  # noqa: BLE001
-            self._logger.exception("metrics sampling cycle failed")
+            self._logger.exception(
+                "metrics sampling cycle failed duration_ms=%.1f",
+                _elapsed_ms(cycle_started_at),
+            )
+        else:
+            self._logger.info(
+                "metrics sampling cycle completed samples=%d duration_ms=%.1f",
+                total,
+                _elapsed_ms(cycle_started_at),
+            )
 
 
 class HostMetricsSamplingScheduler:
@@ -175,17 +215,28 @@ class HostMetricsSamplingScheduler:
         return int(await _maybe_await(self._sampler.sample_connected_hosts()))
 
     async def _run_cycle_job(self) -> None:
+        cycle_started_at = time.perf_counter()
         try:
-            await asyncio.wait_for(
+            total = await asyncio.wait_for(
                 self.run_cycle_once(), timeout=_CYCLE_TIMEOUT_SECONDS
             )
         except asyncio.TimeoutError:
             self._logger.warning(
-                "host metrics sampling cycle timed out after %ds",
+                "host metrics sampling cycle timed out after %ds duration_ms=%.1f",
                 _CYCLE_TIMEOUT_SECONDS,
+                _elapsed_ms(cycle_started_at),
             )
         except Exception:  # noqa: BLE001
-            self._logger.exception("host metrics sampling cycle failed")
+            self._logger.exception(
+                "host metrics sampling cycle failed duration_ms=%.1f",
+                _elapsed_ms(cycle_started_at),
+            )
+        else:
+            self._logger.info(
+                "host metrics sampling cycle completed samples=%d duration_ms=%.1f",
+                total,
+                _elapsed_ms(cycle_started_at),
+            )
 
 
 class ReportScheduler:
@@ -321,3 +372,7 @@ async def _maybe_await(value):
     if inspect.isawaitable(value):
         return await value
     return value
+
+
+def _elapsed_ms(started_at: float) -> float:
+    return (time.perf_counter() - started_at) * 1000.0

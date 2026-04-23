@@ -134,6 +134,32 @@ async def test_scheduler_run_cycle_only_connected_hosts() -> None:
 
 
 @pytest.mark.asyncio
+async def test_metrics_scheduler_logs_cycle_and_host_durations(caplog) -> None:
+    host_manager = _HostManagerStub([{"name": "h1", "status": "connected"}])
+    sampler = _SamplerStub()
+
+    async def list_containers(_host_name: str) -> list[dict]:
+        return [{"id": "c1"}]
+
+    scheduler = MetricsSamplingScheduler(
+        host_manager=host_manager,
+        sampler=sampler,
+        list_containers=list_containers,
+        interval_seconds=30,
+        scheduler_factory=_FakeScheduler,
+    )
+
+    with caplog.at_level("INFO", logger="logdog.collector.scheduler"):
+        await scheduler._run_cycle_job()
+
+    assert "metrics sampling host completed host=h1" in caplog.text
+    assert "list_containers_duration_ms=" in caplog.text
+    assert "sample_host_duration_ms=" in caplog.text
+    assert "metrics sampling cycle completed samples=1" in caplog.text
+    assert "duration_ms=" in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_scheduler_run_cycle_isolates_host_failures() -> None:
     host_manager = _HostManagerStub(
         [
@@ -337,3 +363,19 @@ async def test_host_metrics_scheduler_start_registers_interval_job_and_shutdown(
 
     await scheduler.shutdown()
     assert fake_scheduler.shutdown_called is True
+
+
+@pytest.mark.asyncio
+async def test_host_metrics_scheduler_logs_cycle_duration(caplog) -> None:
+    sampler = _HostMetricsSamplerStub(count=2)
+    scheduler = HostMetricsSamplingScheduler(
+        sampler=sampler,
+        interval_seconds=25,
+        scheduler_factory=_FakeScheduler,
+    )
+
+    with caplog.at_level("INFO", logger="logdog.collector.scheduler"):
+        await scheduler._run_cycle_job()
+
+    assert "host metrics sampling cycle completed samples=2" in caplog.text
+    assert "duration_ms=" in caplog.text

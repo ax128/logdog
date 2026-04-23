@@ -89,3 +89,42 @@ async def test_host_metrics_sampler_collects_connected_hosts_and_skips_failures(
     assert written[0]["collect_load"] is False
     assert written[0]["collect_network"] is False
     assert written[0]["timeout_seconds"] == 5
+
+
+@pytest.mark.asyncio
+async def test_host_metrics_sampler_logs_host_duration(caplog) -> None:
+    host_manager = _HostManagerStub(
+        statuses=[{"name": "h1", "status": "connected"}],
+        configs={"h1": {"name": "h1", "url": "unix:///var/run/docker.sock"}},
+    )
+    written: list[dict] = []
+
+    async def collect_host_metrics(
+        _host_cfg: dict,
+        *,
+        collect_load: bool,
+        collect_network: bool,
+        timeout_seconds: int,
+    ) -> dict:
+        _ = (collect_load, collect_network, timeout_seconds)
+        return {
+            "timestamp": "2026-04-12T10:30:00+00:00",
+            "cpu_percent": 15.0,
+        }
+
+    async def save_metric(sample: dict) -> None:
+        written.append(sample)
+
+    sampler = HostMetricsSampler(
+        host_manager=host_manager,
+        collect_host_metrics=collect_host_metrics,
+        save_metric=save_metric,
+    )
+
+    with caplog.at_level("INFO", logger="logdog.collector.host_metrics_sampler"):
+        count = await sampler.sample_connected_hosts()
+
+    assert count == 1
+    assert len(written) == 1
+    assert "host metrics sample completed host=h1" in caplog.text
+    assert "duration_ms=" in caplog.text

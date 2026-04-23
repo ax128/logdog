@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import inspect
 import logging
+import time
 from typing import Any
 
 from logdog.collector.metrics import build_metric_sample
@@ -31,8 +32,18 @@ class MetricsSampler:
             status = str(container.get("status") or "unknown")
             restart_count = _to_int(container.get("restart_count"))
 
+            container_started_at = time.perf_counter()
             try:
+                fetch_started_at = time.perf_counter()
                 raw_stats = await _maybe_await(self._fetch_stats(host_name, container))
+                fetch_duration_ms = _elapsed_ms(fetch_started_at)
+                self._logger.info(
+                    "metrics container stats fetch completed host=%s container=%s "
+                    "duration_ms=%.1f",
+                    host_name,
+                    container_id,
+                    fetch_duration_ms,
+                )
                 sample = build_metric_sample(
                     host_name=host_name,
                     container_id=container_id,
@@ -48,9 +59,10 @@ class MetricsSampler:
                 written += 1
             except Exception:  # noqa: BLE001
                 self._logger.exception(
-                    "metrics sample failed host=%s container=%s",
+                    "metrics sample failed host=%s container=%s duration_ms=%.1f",
                     host_name,
                     container_id,
+                    _elapsed_ms(container_started_at),
                 )
 
         return written
@@ -67,3 +79,7 @@ def _to_int(value: Any) -> int:
         return int(value)
     except (TypeError, ValueError):
         return 0
+
+
+def _elapsed_ms(started_at: float) -> float:
+    return (time.perf_counter() - started_at) * 1000.0

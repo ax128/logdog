@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import inspect
 import logging
+import time
 from typing import Any
 
 from logdog.collector.host_metrics_probe import collect_host_metrics_for_host
@@ -38,7 +39,9 @@ class HostMetricsSampler:
             host_cfg = self._host_manager.get_host_config(host_name)
             if not isinstance(host_cfg, dict):
                 continue
+            host_started_at = time.perf_counter()
             try:
+                collect_started_at = time.perf_counter()
                 sample = dict(
                     await _maybe_await(
                         self._collect_host_metrics(
@@ -50,11 +53,27 @@ class HostMetricsSampler:
                     )
                     or {}
                 )
+                collect_duration_ms = _elapsed_ms(collect_started_at)
                 sample["host_name"] = host_name
+                save_started_at = time.perf_counter()
                 await _maybe_await(self._save_metric(sample))
+                save_duration_ms = _elapsed_ms(save_started_at)
                 written += 1
             except Exception:  # noqa: BLE001
-                self._logger.exception("host metrics sample failed host=%s", host_name)
+                self._logger.exception(
+                    "host metrics sample failed host=%s duration_ms=%.1f",
+                    host_name,
+                    _elapsed_ms(host_started_at),
+                )
+                continue
+            self._logger.info(
+                "host metrics sample completed host=%s collect_duration_ms=%.1f "
+                "save_duration_ms=%.1f duration_ms=%.1f",
+                host_name,
+                collect_duration_ms,
+                save_duration_ms,
+                _elapsed_ms(host_started_at),
+            )
         return written
 
 
@@ -62,3 +81,7 @@ async def _maybe_await(value: Any) -> Any:
     if inspect.isawaitable(value):
         return await value
     return value
+
+
+def _elapsed_ms(started_at: float) -> float:
+    return (time.perf_counter() - started_at) * 1000.0

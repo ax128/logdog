@@ -108,6 +108,39 @@ async def test_metrics_sampler_collect_once_writes_samples_and_skips_failures() 
     assert written[0]["restart_count"] == 2
 
 
+@pytest.mark.asyncio
+async def test_metrics_sampler_logs_stats_fetch_duration(caplog) -> None:
+    written: list[dict] = []
+
+    async def fetch_stats(_host: str, _container: dict) -> dict:
+        return {
+            "cpu_stats": {
+                "cpu_usage": {"total_usage": 300},
+                "system_cpu_usage": 1400,
+                "online_cpus": 2,
+            },
+            "memory_stats": {"usage": 256, "limit": 1024},
+            "networks": {"eth0": {"rx_bytes": 10, "tx_bytes": 20}},
+            "blkio_stats": {"io_service_bytes_recursive": []},
+        }
+
+    async def save_metric(sample: dict) -> None:
+        written.append(sample)
+
+    sampler = MetricsSampler(fetch_stats=fetch_stats, save_metric=save_metric)
+
+    with caplog.at_level("INFO", logger="logdog.collector.sampler"):
+        count = await sampler.sample_host(
+            host_name="h1",
+            containers=[{"id": "c1", "name": "api", "status": "running"}],
+        )
+
+    assert count == 1
+    assert len(written) == 1
+    assert "metrics container stats fetch completed host=h1 container=c1" in caplog.text
+    assert "duration_ms=" in caplog.text
+
+
 def test_build_metric_sample_defaults_status_and_restart_count() -> None:
     sample = build_metric_sample(
         host_name="h1",
