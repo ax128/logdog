@@ -36,6 +36,15 @@ class _StreamFailure:
     error: BaseException
 
 
+def _error_from_message(message: dict[str, Any]) -> RuntimeError:
+    error_payload = message.get("error")
+    if isinstance(error_payload, dict):
+        message_text = str(error_payload.get("message") or "worker error")
+    else:
+        message_text = str(message.get("message") or "worker error")
+    return RuntimeError(message_text)
+
+
 class _WorkerStream:
     def __init__(
         self,
@@ -96,6 +105,7 @@ class WorkerSession:
         self._close_reason = RuntimeError("worker session closed")
         self._pending_requests: dict[str, queue.Queue[Any]] = {}
         self._streams: dict[str, queue.Queue[Any]] = {}
+        self._stream_request_ids: dict[str, str] = {}
         self._request_sequence = count(1)
 
     async def start(self) -> None:
@@ -126,7 +136,10 @@ class WorkerSession:
 
         async with self._state_lock:
             self._ensure_open()
-            if normalized_request_id in self._pending_requests:
+            if (
+                normalized_request_id in self._pending_requests
+                or normalized_request_id in self._stream_request_ids
+            ):
                 raise ValueError(f"duplicate request_id: {normalized_request_id}")
             self._pending_requests[normalized_request_id] = response_queue
 
@@ -174,17 +187,26 @@ class WorkerSession:
             raise ValueError("stream_id must not be empty")
 
         queue_obj: queue.Queue[Any] = queue.Queue(maxsize=self._stream_queue_maxsize)
+        normalized_request_id = str(request_id or "").strip()
+        if normalized_request_id == "":
+            raise ValueError("request_id must not be empty")
         async with self._state_lock:
             self._ensure_open()
             if normalized_stream_id in self._streams:
                 raise ValueError(f"duplicate stream_id: {normalized_stream_id}")
+            if (
+                normalized_request_id in self._pending_requests
+                or normalized_request_id in self._stream_request_ids
+            ):
+                raise ValueError(f"duplicate request_id: {normalized_request_id}")
             self._streams[normalized_stream_id] = queue_obj
+            self._stream_request_ids[normalized_request_id] = normalized_stream_id
 
         try:
             await self._send_message(
                 {
                     "type": "request",
-                    "request_id": str(request_id),
+                    "request_id": normalized_request_id,
                     "action": str(action),
                     "payload": dict(payload or {}),
                     "stream_id": normalized_stream_id,
@@ -251,6 +273,11 @@ class WorkerSession:
             queue = self._pending_requests.pop(request_id, None)
             if queue is not None:
                 self._push_to_queue(queue, dict(message))
+                return
+            stream_id = self._stream_request_ids.pop(request_id, None)
+            if stream_id is not None and message.get("ok") is False:
+                error = _error_from_message(message)
+                self._finish_stream(stream_id, _StreamFailure(error))
             return
 
         if message_type == "error":
@@ -260,10 +287,16 @@ class WorkerSession:
                 queue = self._pending_requests.pop(request_id, None)
                 if queue is not None:
                     self._push_to_queue(queue, error)
-                return
+                    return
             stream_id = str(message.get("stream_id") or "").strip()
             if stream_id != "":
-                self._push_stream_item(stream_id, _StreamFailure(error))
+                self._finish_stream(stream_id, _StreamFailure(error))
+            return
+
+        if message_type == "stream_end":
+            stream_id = str(message.get("stream_id") or "").strip()
+            if stream_id != "":
+                self._finish_stream(stream_id, _STREAM_END)
             return
 
         if message_type in {"log", "event", "metrics"}:
@@ -295,6 +328,7 @@ class WorkerSession:
             if queue is not None and not self._closed:
                 should_send_cancel = True
         if queue is not None:
+            self._discard_stream_request_ids(stream_id)
             self._push_to_queue(queue, _STREAM_END)
         if should_send_cancel:
             await self._send_cancel_stream(stream_id)
@@ -304,6 +338,12 @@ class WorkerSession:
         if queue_obj is None:
             return
         self._push_to_queue(queue_obj, item)
+
+    def _finish_stream(self, stream_id: str, item: Any) -> None:
+        queue_obj = self._streams.pop(stream_id, None)
+        self._discard_stream_request_ids(stream_id)
+        if queue_obj is not None:
+            self._push_to_queue(queue_obj, item)
 
     def _push_to_queue(self, queue_obj: queue.Queue[Any], item: Any) -> None:
         try:
@@ -327,8 +367,18 @@ class WorkerSession:
     def _close_streams_locked(self) -> None:
         queues = list(self._streams.values())
         self._streams.clear()
+        self._stream_request_ids.clear()
         for queue_obj in queues:
             self._push_to_queue(queue_obj, _STREAM_END)
+
+    def _discard_stream_request_ids(self, stream_id: str) -> None:
+        stale_request_ids = [
+            request_id
+            for request_id, mapped_stream_id in self._stream_request_ids.items()
+            if mapped_stream_id == stream_id
+        ]
+        for request_id in stale_request_ids:
+            self._stream_request_ids.pop(request_id, None)
 
     def _ensure_open(self) -> None:
         if self._closed:

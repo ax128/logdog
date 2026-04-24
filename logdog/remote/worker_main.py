@@ -1136,14 +1136,15 @@ class RemoteWorkerProcess:
                     "stream_id": stream_id,
                 }
             )
-            stream = await self._call_backend(
-                "stream_container_logs",
-                host,
-                container,
-                since=payload.get("since"),
-                tail=payload.get("tail"),
-            )
+            stream = None
             try:
+                stream = await self._call_backend(
+                    "stream_container_logs",
+                    host,
+                    container,
+                    since=payload.get("since"),
+                    tail=payload.get("tail"),
+                )
                 async for record in self._iterate_stream(stream):
                     for item in self._normalize_log_records(
                         host,
@@ -1152,8 +1153,15 @@ class RemoteWorkerProcess:
                         pipeline_config=pipeline_config,
                     ):
                         await self._send_frame("log", stream_id, item)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                await self._send_stream_error(stream_id, exc)
+                return {"_kind": "stream"}
             finally:
-                await self._close_stream_resource(stream)
+                if stream is not None:
+                    await self._close_stream_resource(stream)
+            await self._send_stream_end(stream_id)
             return {"_kind": "stream"}
         if action in {"stream_docker_events", "stream_events"}:
             host = self._require_host(payload)
@@ -1166,16 +1174,24 @@ class RemoteWorkerProcess:
                     "stream_id": stream_id,
                 }
             )
-            stream = await self._call_backend(
-                "stream_docker_events",
-                host,
-                filters=payload.get("filters"),
-            )
+            stream = None
             try:
+                stream = await self._call_backend(
+                    "stream_docker_events",
+                    host,
+                    filters=payload.get("filters"),
+                )
                 async for event in self._iterate_stream(stream):
                     await self._send_frame("event", stream_id, dict(event))
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                await self._send_stream_error(stream_id, exc)
+                return {"_kind": "stream"}
             finally:
-                await self._close_stream_resource(stream)
+                if stream is not None:
+                    await self._close_stream_resource(stream)
+            await self._send_stream_end(stream_id)
             return {"_kind": "stream"}
         if action == "shutdown":
             return None
@@ -1257,6 +1273,22 @@ class RemoteWorkerProcess:
     ) -> None:
         message = {"type": frame_type, "stream_id": stream_id, **payload}
         await self._send_message(message)
+
+    async def _send_stream_end(self, stream_id: str) -> None:
+        await self._send_message({"type": "stream_end", "stream_id": stream_id})
+
+    async def _send_stream_error(self, stream_id: str, exc: BaseException) -> None:
+        await self._send_message(
+            {
+                "type": "error",
+                "stream_id": stream_id,
+                "message": str(exc),
+                "error": {
+                    "type": exc.__class__.__name__,
+                    "message": str(exc),
+                },
+            }
+        )
 
     async def _send_message(self, message: dict[str, Any]) -> None:
         encoded = encode_frame(message)

@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
 from logdog.llm.agent_runtime import DEFAULT_CHAT_FALLBACK_MESSAGE
 from logdog.web.chat import create_chat_app
+from starlette.exceptions import WebSocketException
 from starlette.websockets import WebSocketDisconnect
 
 
@@ -130,3 +132,25 @@ def test_ws_chat_default_session_key_does_not_reuse_auth_token() -> None:
 
     assert fake_ws.accepted is True
     assert runtime.calls[0]["session_key"] != "secret"
+
+
+def test_ws_chat_rejects_oversized_session_key() -> None:
+    runtime = _RecordingRuntime()
+    app = create_chat_app(web_auth_token="secret", chat_runtime=runtime)
+    ws_handler = app.state.ws_handler
+
+    fake_ws = FakeWebSocket(
+        query_params={},
+        headers={
+            "authorization": "Bearer secret",
+            "x-session-id": "a" * 257,
+        },
+    )
+    fake_ws.received.append("ping")
+
+    with pytest.raises(WebSocketException) as exc_info:
+        asyncio.run(ws_handler(fake_ws))
+
+    assert exc_info.value.code == 1008
+    assert fake_ws.accepted is False
+    assert runtime.calls == []

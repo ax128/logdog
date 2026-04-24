@@ -217,6 +217,12 @@ def assess_host_security(
         if username == "root":
             issues.append("SSH login uses root account")
 
+        if "strict_host_key" in host_cfg and not _coerce_bool_like(
+            host_cfg.get("strict_host_key"),
+            default=True,
+        ):
+            issues.append("SSH host key verification is disabled")
+
         ssh_key = str(host_cfg.get("ssh_key") or "").strip()
         strict_ssh_key = bool(host_cfg.get("strict_ssh_key", False))
         ssh_key_label = os.path.basename(ssh_key) if ssh_key else "ssh_key"

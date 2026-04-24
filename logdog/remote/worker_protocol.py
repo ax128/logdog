@@ -14,10 +14,11 @@ _SUPPORTED_MESSAGE_TYPES = {
     "log",
     "event",
     "metrics",
+    "stream_end",
     "error",
     "shutdown_ack",
 }
-_STREAM_MESSAGE_TYPES = {"log", "event", "metrics"}
+_STREAM_MESSAGE_TYPES = {"log", "event", "metrics", "stream_end"}
 _REQUEST_MESSAGE_TYPES = {"request", "response"}
 
 

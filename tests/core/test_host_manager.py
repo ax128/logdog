@@ -57,6 +57,31 @@ async def test_startup_marks_missing_ssh_key_disconnected() -> None:
 
 
 @pytest.mark.asyncio
+async def test_startup_allows_password_only_ssh_host() -> None:
+    calls: list[str] = []
+
+    async def connector(host: dict) -> dict:
+        calls.append(host["name"])
+        return {"server_version": "24.0.7"}
+
+    manager = HostManager(
+        hosts=[
+            {
+                "name": "prod",
+                "url": "ssh://deploy@10.0.1.10",
+                "ssh_password": "secret",
+            }
+        ],
+        connector=connector,
+    )
+    await manager.startup_check()
+    statuses = manager.list_host_statuses()
+
+    assert calls == ["prod"]
+    assert statuses[0]["status"] == "connected"
+
+
+@pytest.mark.asyncio
 async def test_precheck_rejects_when_ssh_key_permission_too_open(
     tmp_path: Path,
 ) -> None:

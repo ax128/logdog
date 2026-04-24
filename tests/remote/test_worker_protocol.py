@@ -23,6 +23,7 @@ def test_encode_frame_round_trips_supported_message_types() -> None:
         {"type": "log", "stream_id": "stream-1", "line": "line one"},
         {"type": "event", "stream_id": "stream-1", "kind": "started"},
         {"type": "metrics", "stream_id": "stream-1", "cpu": 0.5},
+        {"type": "stream_end", "stream_id": "stream-1"},
         {"type": "error", "code": "bad_request"},
         {"type": "shutdown_ack", "reason": "done"},
     ]

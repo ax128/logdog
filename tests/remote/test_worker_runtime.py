@@ -155,6 +155,116 @@ async def test_worker_session_dispatches_stream_messages_to_subscription_queue()
 
 
 @pytest.mark.asyncio
+async def test_worker_session_rejects_stream_when_start_response_fails() -> None:
+    channel = _FakeChannel()
+    session = WorkerSession(channel=channel)
+    await session.start()
+
+    stream = await session.open_stream(
+        action="stream_logs",
+        payload={"host": "prod", "container_id": "c1"},
+        request_id="req-stream-reject",
+        stream_id="stream-reject",
+    )
+    channel.push_read(
+        {
+            "type": "response",
+            "request_id": "req-stream-reject",
+            "ok": False,
+            "error": {"type": "ValueError", "message": "preprocessors forbidden"},
+        }
+    )
+
+    with pytest.raises(RuntimeError, match="preprocessors"):
+        await asyncio.wait_for(anext(stream), timeout=1.0)
+
+    await session.close()
+
+
+@pytest.mark.asyncio
+async def test_worker_session_closes_stream_on_stream_end_frame() -> None:
+    channel = _FakeChannel()
+    session = WorkerSession(channel=channel)
+    await session.start()
+
+    stream = await session.open_stream(
+        action="stream_logs",
+        payload={"host": "prod", "container_id": "c1"},
+        request_id="req-stream-end",
+        stream_id="stream-end",
+    )
+    channel.push_read(
+        {
+            "type": "response",
+            "request_id": "req-stream-end",
+            "ok": True,
+            "stream_id": "stream-end",
+        }
+    )
+    channel.push_read({"type": "stream_end", "stream_id": "stream-end"})
+
+    with pytest.raises(StopAsyncIteration):
+        await asyncio.wait_for(anext(stream), timeout=1.0)
+
+    await session.close()
+
+
+@pytest.mark.asyncio
+async def test_worker_session_rejects_stream_request_id_matching_pending_request() -> None:
+    channel = _FakeChannel()
+    session = WorkerSession(channel=channel)
+    await session.start()
+
+    request_task = asyncio.create_task(
+        session.request(
+            action="list_containers",
+            payload={"host": "prod"},
+            request_id="req-dup",
+            timeout_seconds=1.0,
+        )
+    )
+    await asyncio.sleep(0)
+
+    with pytest.raises(ValueError, match="duplicate request_id"):
+        await session.open_stream(
+            action="stream_logs",
+            payload={"host": "prod", "container_id": "c1"},
+            request_id="req-dup",
+            stream_id="stream-dup",
+        )
+
+    channel.finish()
+    with pytest.raises(RuntimeError, match="worker session closed"):
+        await request_task
+    await session.close()
+
+
+@pytest.mark.asyncio
+async def test_worker_session_rejects_request_id_matching_open_stream() -> None:
+    channel = _FakeChannel()
+    session = WorkerSession(channel=channel)
+    await session.start()
+
+    stream = await session.open_stream(
+        action="stream_logs",
+        payload={"host": "prod", "container_id": "c1"},
+        request_id="req-stream-dup",
+        stream_id="stream-dup",
+    )
+
+    with pytest.raises(ValueError, match="duplicate request_id"):
+        await session.request(
+            action="list_containers",
+            payload={"host": "prod"},
+            request_id="req-stream-dup",
+            timeout_seconds=1.0,
+        )
+
+    await stream.aclose()
+    await session.close()
+
+
+@pytest.mark.asyncio
 async def test_worker_session_stream_close_sends_cancel_request() -> None:
     channel = _FakeChannel()
     session = WorkerSession(channel=channel)

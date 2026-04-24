@@ -626,13 +626,14 @@ async def test_remote_worker_process_emits_stream_frames() -> None:
     assert messages[1]["stream_id"] == "stream-1"
     assert messages[1]["line"] == "ERROR token=***"
     assert "metadata" in messages[1]
-    assert messages[2] == {
+    assert messages[2] == {"type": "stream_end", "stream_id": "stream-1"}
+    assert messages[3] == {
         "type": "response",
         "request_id": "req-stream-2",
         "ok": True,
         "result": {"accepted": True, "reason": "shutdown requested"},
     }
-    assert messages[3] == {"type": "shutdown_ack", "reason": "shutdown requested"}
+    assert messages[4] == {"type": "shutdown_ack", "reason": "shutdown requested"}
 
 
 @pytest.mark.asyncio
@@ -989,3 +990,43 @@ async def test_remote_worker_process_rejects_forbidden_pipeline_payload() -> Non
         "result": {"accepted": True, "reason": "shutdown requested"},
     }
     assert messages[2] == {"type": "shutdown_ack", "reason": "shutdown requested"}
+
+
+@pytest.mark.asyncio
+async def test_remote_worker_process_sends_stream_end_after_log_stream_finishes() -> None:
+    channel = _FakeChannel()
+    backend = _BackendStub()
+    process = RemoteWorkerProcess(
+        channel=channel,
+        docker_backend=backend,
+        cleanup=lambda _reason: None,
+        heartbeat_timeout_seconds=5.0,
+    )
+
+    task = asyncio.create_task(process.serve_forever())
+    channel.push_message(
+        {
+            "type": "request",
+            "request_id": "req-stream-1",
+            "action": "stream_logs",
+            "stream_id": "stream-1",
+            "payload": {
+                "host": {"name": "prod"},
+                "container": {"id": "c1", "name": "svc"},
+            },
+        }
+    )
+    await asyncio.sleep(0.05)
+    channel.push_message(
+        {
+            "type": "request",
+            "request_id": "req-shutdown",
+            "action": "shutdown",
+            "payload": {},
+        }
+    )
+
+    await asyncio.wait_for(task, timeout=1.0)
+
+    messages = _decode_messages(channel)
+    assert {"type": "stream_end", "stream_id": "stream-1"} in messages

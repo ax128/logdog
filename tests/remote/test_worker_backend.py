@@ -800,6 +800,36 @@ async def test_remote_worker_backend_heartbeat_failure_closes_session_and_allows
 
 
 @pytest.mark.asyncio
+async def test_paramiko_remote_worker_launcher_uses_strict_host_key_policy_by_default() -> None:
+    python3_probe = _FakeExecChannel(stdout=b"", stderr=b"missing\n", exit_status=127)
+    python_probe = _FakeExecChannel(stdout=b"python\n", exit_status=0)
+    tempdir_probe = _FakeExecChannel(
+        stdout=b"/tmp/logdog-remote-worker-abcd\n",
+        exit_status=0,
+    )
+    worker_channel = _FakeWorkerChannel()
+    transport = _FakeTransport(
+        [python3_probe, python_probe, tempdir_probe, worker_channel]
+    )
+    client = _FakeSSHClient(transport=transport, sftp=_FakeSFTP())
+
+    launcher = ParamikoRemoteWorkerLauncher(
+        ssh_client_factory=lambda: client,
+    )
+
+    await launcher.prepare_session(
+        {
+            "name": "prod",
+            "url": "ssh://deploy@example-host:2222",
+            "ssh_key": "/keys/id_ed25519",
+            "remote_worker": {"enabled": True},
+        }
+    )
+
+    assert client.policy_name == "RejectPolicy"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("strict_host_key_value", "expected_policy"),
     [

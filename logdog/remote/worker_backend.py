@@ -301,13 +301,9 @@ class ParamikoRemoteWorkerLauncher:
         heartbeat_poll_interval_seconds = remote_worker.get(
             "heartbeat_poll_interval_seconds"
         )
-        # NOTE: docker SDK's ssh:// path uses the system ssh client by default and
-        # typically auto-accepts unknown host keys in non-interactive mode. To
-        # keep remote worker default-on behavior compatible with existing setups,
-        # we default to non-strict host key checking unless explicitly enabled.
         strict_host_key = _coerce_bool_like(
             host.get("strict_host_key", host.get("strict_ssh_key")),
-            default=False,
+            default=True,
         )
         ssh_key = str(host.get("ssh_key") or "").strip()
         password = str(parsed.password or host.get("ssh_password") or host.get("password") or "").strip()

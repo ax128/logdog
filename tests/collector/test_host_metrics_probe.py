@@ -365,3 +365,22 @@ def test_assess_host_security_can_require_ssh_key_via_strict_flag() -> None:
 
     assert report["ok"] is False
     assert any("ssh key is missing" in item.lower() for item in report["issues"])
+
+
+def test_assess_host_security_reports_disabled_host_key_verification() -> None:
+    report = assess_host_security(
+        {
+            "name": "prod",
+            "url": "ssh://deploy@example-host",
+            "strict_host_key": False,
+        },
+        metric_sample={
+            "mem_total": 1000,
+            "mem_used": 400,
+            "disk_root_total": 1000,
+            "disk_root_used": 500,
+        },
+    )
+
+    assert report["ok"] is False
+    assert any("host key verification" in item.lower() for item in report["issues"])

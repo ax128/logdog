@@ -288,6 +288,15 @@ class HostManager:
 
         ssh_key = str(host.get("ssh_key") or "").strip()
         if ssh_key == "":
+            parsed_url = urlsplit(url)
+            password = str(
+                parsed_url.password
+                or host.get("ssh_password")
+                or host.get("password")
+                or ""
+            ).strip()
+            if password != "":
+                return None
             return "SSH key missing for ssh host"
         if not os.path.exists(ssh_key):
             return f"SSH key not found: {ssh_key}"

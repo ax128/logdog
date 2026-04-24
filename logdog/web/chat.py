@@ -25,6 +25,7 @@ from starlette.websockets import WebSocketDisconnect
 logger = logging.getLogger(__name__)
 DEFAULT_WS_TICKET_TTL_SECONDS = 60
 DEFAULT_WS_TICKET_MAX_ENTRIES = 10_000
+DEFAULT_WS_SESSION_KEY_MAX_LENGTH = 256
 
 
 class WsTicketStore:
@@ -242,8 +243,8 @@ def _build_ws_handler(
             raise WebSocketException(code=1008)
 
         try:
-            await websocket.accept()
             session_key = _resolve_session_key(websocket, authenticated_token)
+            await websocket.accept()
             processed = 0
             while processed < max_messages_per_connection:
                 try:
@@ -383,13 +384,21 @@ def create_chat_app(
 def _resolve_session_key(websocket: WebSocket, authenticated_token: str) -> str:
     header_session = websocket.headers.get("x-session-id")
     if header_session and header_session.strip() != "":
-        return header_session.strip()
+        return _validate_session_key(header_session.strip())
 
     query_session = websocket.query_params.get("session")
     if query_session and query_session.strip() != "":
-        return query_session.strip()
+        return _validate_session_key(query_session.strip())
 
     return f"ws:{uuid.uuid4().hex}"
+
+
+def _validate_session_key(session_key: str) -> str:
+    if len(session_key) > DEFAULT_WS_SESSION_KEY_MAX_LENGTH:
+        raise WebSocketException(code=1008)
+    if any(ord(ch) < 33 or ord(ch) > 126 for ch in session_key):
+        raise WebSocketException(code=1008)
+    return session_key
 
 
 def _derive_runtime_user_id(authenticated_token: str) -> str:
