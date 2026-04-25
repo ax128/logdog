@@ -17,7 +17,8 @@ def _line(content: str, level: str | None = None) -> LogLine:
     )
 
 
-def test_regex_extract_skips_invalid_patterns_and_keeps_valid_one() -> None:
+def test_regex_extract_skips_invalid_patterns_and_keeps_valid_one(monkeypatch) -> None:
+    monkeypatch.setenv("LOGDOG_ENABLE_TEMPLATE_PREPROCESSORS", "1")
     templates_dir = Path(__file__).resolve().parents[2] / "templates" / "preprocessors"
     configs = [
         {

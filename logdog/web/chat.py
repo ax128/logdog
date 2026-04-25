@@ -180,6 +180,7 @@ def _build_ws_handler(
     max_connections: int | None,
     max_connections_per_user: int | None,
     receive_timeout_seconds: float | None,
+    llm_timeout_seconds: float = 120.0,
     chat_runtime: Any,
     chat_runtime_getter: Any | None = None,
     ws_ticket_consumer: Callable[[str], str | None] | None = None,
@@ -266,22 +267,32 @@ def _build_ws_handler(
                     )
                     ainvoke_text = getattr(runtime, "ainvoke_text", None)
                     if callable(ainvoke_text):
-                        reply = await ainvoke_text(
-                            msg,
-                            user_id=runtime_user_id,
-                            session_key=session_key,
-                            fallback=DEFAULT_CHAT_FALLBACK_MESSAGE,
+                        reply = await asyncio.wait_for(
+                            ainvoke_text(
+                                msg,
+                                user_id=runtime_user_id,
+                                session_key=session_key,
+                                fallback=DEFAULT_CHAT_FALLBACK_MESSAGE,
+                            ),
+                            timeout=llm_timeout_seconds,
                         )
                     else:
                         invoke_text = getattr(runtime, "invoke_text", None)
                         if not callable(invoke_text):
                             raise RuntimeError("chat runtime missing invoke_text")
-                        reply = invoke_text(
-                            msg,
-                            user_id=runtime_user_id,
-                            session_key=session_key,
-                            fallback=DEFAULT_CHAT_FALLBACK_MESSAGE,
+                        reply = await asyncio.wait_for(
+                            asyncio.to_thread(
+                                invoke_text,
+                                msg,
+                                user_id=runtime_user_id,
+                                session_key=session_key,
+                                fallback=DEFAULT_CHAT_FALLBACK_MESSAGE,
+                            ),
+                            timeout=llm_timeout_seconds,
                         )
+                except asyncio.TimeoutError:
+                    logger.warning("web chat LLM timeout user_id=%s", runtime_user_id)
+                    reply = DEFAULT_CHAT_FALLBACK_MESSAGE
                 except Exception:  # noqa: BLE001 - websocket must degrade safely
                     logger.warning("web chat runtime invoke failed", exc_info=True)
                     reply = DEFAULT_CHAT_FALLBACK_MESSAGE
@@ -306,6 +317,7 @@ def create_chat_router(
     max_connections: int | None = 200,
     max_connections_per_user: int | None = 20,
     receive_timeout_seconds: float | None = 60.0,
+    llm_timeout_seconds: float = 120.0,
     chat_runtime: Any | None = None,
     chat_runtime_getter: Any | None = None,
     tool_registry: dict[str, Any] | None = None,
@@ -341,6 +353,7 @@ def create_chat_router(
             if receive_timeout_seconds is None
             else float(receive_timeout_seconds)
         ),
+        llm_timeout_seconds=llm_timeout_seconds,
         chat_runtime=resolved_chat_runtime,
         chat_runtime_getter=chat_runtime_getter,
         ws_ticket_consumer=ws_ticket_consumer,
@@ -358,6 +371,7 @@ def create_chat_app(
     max_connections: int | None = 200,
     max_connections_per_user: int | None = 20,
     receive_timeout_seconds: float | None = 60.0,
+    llm_timeout_seconds: float = 120.0,
     chat_runtime: Any | None = None,
     tool_registry: dict[str, Any] | None = None,
     runtime_factory: Any | None = None,
@@ -370,6 +384,7 @@ def create_chat_app(
         max_connections=max_connections,
         max_connections_per_user=max_connections_per_user,
         receive_timeout_seconds=receive_timeout_seconds,
+        llm_timeout_seconds=llm_timeout_seconds,
         chat_runtime=chat_runtime,
         tool_registry=tool_registry,
         runtime_factory=runtime_factory,

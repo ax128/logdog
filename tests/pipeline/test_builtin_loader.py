@@ -68,7 +68,8 @@ def _write_script(path: Path, name: str) -> None:
     """).strip() + "\n")
 
 
-def test_load_builtin_file_fallback(tmp_path):
+def test_load_builtin_file_fallback(tmp_path, monkeypatch):
+    monkeypatch.setenv("LOGDOG_ENABLE_TEMPLATE_PREPROCESSORS", "1")
     _write_script(tmp_path / "custom_filter.py", "custom_filter")
     result = load_builtin_preprocessors(
         [{"name": "custom_filter"}], templates_dir=tmp_path
@@ -77,7 +78,8 @@ def test_load_builtin_file_fallback(tmp_path):
     assert result[0].name == "custom_filter"
 
 
-def test_load_builtin_file_fallback_applies_logic(tmp_path):
+def test_load_builtin_file_fallback_applies_logic(tmp_path, monkeypatch):
+    monkeypatch.setenv("LOGDOG_ENABLE_TEMPLATE_PREPROCESSORS", "1")
     _write_script(tmp_path / "custom_filter.py", "custom_filter")
     result = load_builtin_preprocessors(
         [{"name": "custom_filter"}], templates_dir=tmp_path
@@ -110,7 +112,8 @@ def test_load_preprocessors_with_builtin_configs(tmp_path):
     assert [p.name for p in result] == ["default", "dedup"]
 
 
-def test_load_preprocessors_with_file_based_custom(tmp_path):
+def test_load_preprocessors_with_file_based_custom(tmp_path, monkeypatch):
+    monkeypatch.setenv("LOGDOG_ENABLE_TEMPLATE_PREPROCESSORS", "1")
     _write_script(tmp_path / "my_filter.py", "my_filter")
     result = load_preprocessors(
         tmp_path / "empty",

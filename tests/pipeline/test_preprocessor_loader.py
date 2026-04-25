@@ -181,3 +181,60 @@ def test_load_preprocessors_supports_class_or_instance_exports_calls_on_load_and
     assert getattr(preprocessors[1], "loaded", False) is True
     assert lines[0].content == "raw|first|second"
     assert any("30_invalid.py" in record.message for record in caplog.records)
+
+
+def test_template_dir_preprocessors_skipped_by_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Template directory .py files are NOT loaded unless env var is set."""
+    monkeypatch.delenv("LOGDOG_ENABLE_TEMPLATE_PREPROCESSORS", raising=False)
+    loader = _import_preprocessor_loader()
+    script = tmp_path / "custom_filter.py"
+    _write_module(
+        script,
+        """
+        from logdog.pipeline.preprocessor.base import BasePreprocessor
+
+
+        class CustomFilter(BasePreprocessor):
+            name = "custom_filter"
+
+            def process(self, lines):
+                return lines
+
+
+        PREPROCESSOR = CustomFilter()
+        """,
+    )
+    configs = [{"name": "custom_filter"}]
+    result = loader.load_builtin_preprocessors(configs, templates_dir=tmp_path)
+    assert len(result) == 0
+
+
+def test_template_dir_preprocessors_loaded_when_env_enabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Template directory .py files are loaded when env var is truthy."""
+    monkeypatch.setenv("LOGDOG_ENABLE_TEMPLATE_PREPROCESSORS", "1")
+    loader = _import_preprocessor_loader()
+    script = tmp_path / "custom_filter.py"
+    _write_module(
+        script,
+        """
+        from logdog.pipeline.preprocessor.base import BasePreprocessor
+
+
+        class CustomFilter(BasePreprocessor):
+            name = "custom_filter"
+
+            def process(self, lines):
+                return lines
+
+
+        PREPROCESSOR = CustomFilter()
+        """,
+    )
+    configs = [{"name": "custom_filter"}]
+    result = loader.load_builtin_preprocessors(configs, templates_dir=tmp_path)
+    assert len(result) == 1
+    assert result[0].name == "custom_filter"

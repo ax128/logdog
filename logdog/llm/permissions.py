@@ -3,26 +3,56 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 
 DEFAULT_DANGEROUS_TOOLS = frozenset({"restart_container", "exec_container"})
 DEFAULT_CONFIRMATION_FIELDS = ("confirmed", "confirmation")
-TRUTHY_CONFIRMATION_VALUES = frozenset({"1", "true", "yes", "confirm", "confirmed"})
 DEFAULT_APPROVAL_TOKEN_TTL_SECONDS = 300
 APPROVAL_TOKEN_FIELD = "approval_token"
 APPROVAL_TOKEN_VERSION = "v1"
 
 
-@dataclass(frozen=True, slots=True)
+class ConsumedTokenStore:
+    """Thread-safe store that tracks consumed approval-token signatures."""
+
+    __slots__ = ("_consumed", "_lock")
+
+    def __init__(self) -> None:
+        self._consumed: dict[str, float] = {}
+        self._lock = threading.Lock()
+
+    def consume(self, signature: str, expires_at: float) -> bool:
+        with self._lock:
+            self._prune(expires_at)
+            if signature in self._consumed:
+                return False
+            self._consumed[signature] = expires_at
+            return True
+
+    def prune(self, now: float) -> None:
+        with self._lock:
+            self._prune(now)
+
+    def _prune(self, now: float) -> None:
+        expired = [sig for sig, exp in self._consumed.items() if exp < now]
+        for sig in expired:
+            del self._consumed[sig]
+
+
+@dataclass(frozen=True)
 class ToolPermissionPolicy:
     dangerous_tools: frozenset[str] = DEFAULT_DANGEROUS_TOOLS
     dangerous_host_allowlist: frozenset[str] = frozenset()
     confirmation_fields: tuple[str, ...] = DEFAULT_CONFIRMATION_FIELDS
     approval_secret: str = ""
     approval_token_ttl_seconds: int = DEFAULT_APPROVAL_TOKEN_TTL_SECONDS
+    _consumed_tokens: ConsumedTokenStore = field(
+        default_factory=ConsumedTokenStore, compare=False, hash=False, repr=False,
+    )
 
 
 def load_permission_policy(app_config: dict[str, Any] | None) -> ToolPermissionPolicy:
@@ -165,6 +195,7 @@ def has_valid_approval_token(
         return False
     current_time = int(now if now is not None else time.time())
     if expires_at < current_time:
+        policy._consumed_tokens.prune(current_time)
         return False
 
     payload = _approval_signature_payload(
@@ -177,25 +208,10 @@ def has_valid_approval_token(
         payload,
         hashlib.sha256,
     ).hexdigest()
-    return hmac.compare_digest(provided_signature, expected_signature)
+    if not hmac.compare_digest(provided_signature, expected_signature):
+        return False
 
-
-def has_explicit_confirmation(
-    arguments: dict[str, Any] | None,
-    *,
-    policy: ToolPermissionPolicy,
-) -> bool:
-    normalized_args = arguments if isinstance(arguments, dict) else {}
-    for field in policy.confirmation_fields:
-        value = normalized_args.get(field)
-        if value is True:
-            return True
-        if (
-            isinstance(value, str)
-            and value.strip().lower() in TRUTHY_CONFIRMATION_VALUES
-        ):
-            return True
-    return False
+    return policy._consumed_tokens.consume(provided_signature, float(expires_at))
 
 
 def _approval_signature_payload(

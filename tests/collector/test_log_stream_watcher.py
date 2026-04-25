@@ -1131,3 +1131,44 @@ async def test_reconnect_backoff_resets_after_successful_stream() -> None:
     assert sleep_durations[2] < sleep_durations[1], (
         f"backoff should reset after EOF: {sleep_durations}"
     )
+
+
+# ---------------------------------------------------------------------------
+# _truncate_line tests
+# ---------------------------------------------------------------------------
+
+
+def test_truncate_line_short_line_unchanged() -> None:
+    from logdog.collector.log_stream import _truncate_line, DEFAULT_MAX_LINE_CHARS
+
+    short_line = "normal log line"
+    result = _truncate_line(short_line, DEFAULT_MAX_LINE_CHARS)
+    assert result == short_line
+
+
+def test_truncate_line_oversized_line_truncated() -> None:
+    from logdog.collector.log_stream import _truncate_line, DEFAULT_MAX_LINE_CHARS
+
+    long_line = "X" * 20000
+    result = _truncate_line(long_line, DEFAULT_MAX_LINE_CHARS)
+    assert len(result) < len(long_line)
+    assert result.startswith("X" * 100)
+    assert "truncated" in result
+    assert "3616" in result  # 20000 - 16384 = 3616
+
+
+def test_truncate_line_exact_limit_unchanged() -> None:
+    from logdog.collector.log_stream import _truncate_line
+
+    line = "A" * 100
+    result = _truncate_line(line, 100)
+    assert result == line
+
+
+def test_truncate_line_one_over_limit() -> None:
+    from logdog.collector.log_stream import _truncate_line
+
+    line = "A" * 101
+    result = _truncate_line(line, 100)
+    assert result.startswith("A" * 100)
+    assert "truncated 1 chars" in result

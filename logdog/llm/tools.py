@@ -23,7 +23,6 @@ from logdog.core.docker_connector import (
 )
 from logdog.llm.permissions import (
     ensure_tool_allowed,
-    has_valid_approval_token,
     load_permission_policy,
 )
 
@@ -665,12 +664,6 @@ def create_tool_registry(
     async def restart_container_handler(
         arguments: dict[str, Any], _writer: Any
     ) -> ToolResult:
-        if not has_valid_approval_token(
-            "restart_container",
-            arguments,
-            policy=permission_policy,
-        ):
-            raise ValueError("approval_token is required to execute restart")
         host = _require_host_config(host_manager, arguments)
         container_id = _require_non_empty_str(
             arguments.get("container_id"), field_name="container_id"
@@ -730,12 +723,6 @@ def create_tool_registry(
     async def exec_container_handler(
         arguments: dict[str, Any], _writer: Any
     ) -> ToolResult:
-        if not has_valid_approval_token(
-            "exec_container",
-            arguments,
-            policy=permission_policy,
-        ):
-            raise ValueError("approval_token is required to execute exec_container")
         host = _require_host_config(host_manager, arguments)
         container_id = _require_non_empty_str(
             arguments.get("container_id"), field_name="container_id"

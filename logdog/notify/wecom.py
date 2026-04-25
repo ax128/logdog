@@ -94,7 +94,6 @@ class WecomWebhookSender:
             except (HTTPError, URLError, RuntimeError) as exc:
                 last_error = exc
                 if attempt < self._max_retries - 1:
-                    time.sleep(float(2**attempt))
                     continue
                 break
         raise RuntimeError(f"wecom webhook send failed: {last_error}")

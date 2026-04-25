@@ -1,6 +1,6 @@
 import pytest
 
-from logdog.pipeline.filter import apply_rules
+from logdog.pipeline.filter import _compile_pattern, apply_rules
 
 
 def sample_config():
@@ -87,3 +87,35 @@ def test_invalid_overlong_regex_pattern_rejected():
     cfg["rules"]["ignore"] = [{"pattern": "a" * 2000}]
     with pytest.raises(ValueError):
         apply_rules("plain text", config=cfg)
+
+
+@pytest.mark.parametrize(
+    "pattern",
+    [
+        r"(a+)+",
+        r"(a+)+$",
+        r"(a*)*b",
+        r"(a|b+)+c",
+        r"([a-z]+)*",
+        r"(x+x+)+y",
+    ],
+)
+def test_redos_patterns_rejected(pattern: str) -> None:
+    with pytest.raises(ValueError, match="potentially unsafe"):
+        _compile_pattern(pattern)
+
+
+@pytest.mark.parametrize(
+    "pattern",
+    [
+        r"error|fatal|panic",
+        r"\d{4}-\d{2}-\d{2}",
+        r"(error|warning):\s+.+",
+        r"[a-z]+_[a-z]+",
+        r"(?:https?://)\S+",
+        r"timeout after \d+ seconds",
+    ],
+)
+def test_safe_patterns_accepted(pattern: str) -> None:
+    compiled = _compile_pattern(pattern)
+    assert compiled is not None

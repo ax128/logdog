@@ -23,6 +23,7 @@ DEFAULT_PREPROCESSORS_DIR = (
 )
 
 _ENABLE_ENV_VAR = "LOGDOG_ENABLE_USER_PREPROCESSORS"
+_ENABLE_TEMPLATE_ENV_VAR = "LOGDOG_ENABLE_TEMPLATE_PREPROCESSORS"
 _ENV_TRUTHY_VALUES = frozenset({"1", "true", "yes", "on"})
 
 
@@ -88,6 +89,9 @@ def _resolve_one(
             return None
 
     # 2. File fallback: templates/preprocessors/<name>.py
+    if not _resolve_template_preprocessors_enabled():
+        return None
+
     script_path = templates_dir / f"{name}.py"
     if script_path.is_file():
         return _load_preprocessor_from_file(script_path, config=cfg)
@@ -198,4 +202,9 @@ def _resolve_user_preprocessors_enabled(enabled: bool | None) -> bool:
     if enabled is not None:
         return bool(enabled)
     raw = os.getenv(_ENABLE_ENV_VAR, "").strip().lower()
+    return raw in _ENV_TRUTHY_VALUES
+
+
+def _resolve_template_preprocessors_enabled() -> bool:
+    raw = os.getenv(_ENABLE_TEMPLATE_ENV_VAR, "").strip().lower()
     return raw in _ENV_TRUTHY_VALUES

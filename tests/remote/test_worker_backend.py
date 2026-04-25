@@ -833,9 +833,9 @@ async def test_paramiko_remote_worker_launcher_uses_strict_host_key_policy_by_de
 @pytest.mark.parametrize(
     ("strict_host_key_value", "expected_policy"),
     [
-        (False, "AutoAddPolicy"),
-        ("false", "AutoAddPolicy"),
-        ("0", "AutoAddPolicy"),
+        (False, "WarningPolicy"),
+        ("false", "WarningPolicy"),
+        ("0", "WarningPolicy"),
         (True, "RejectPolicy"),
         ("true", "RejectPolicy"),
     ],

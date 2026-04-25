@@ -22,12 +22,24 @@ _DEFAULT_KEYWORDS: tuple[str, ...] = (
     "oom",
 )
 _MAX_PATTERN_LENGTH = 1024
+_NESTED_QUANTIFIER_RE = re.compile(
+    r"(?:"
+    r"[+*]\)"
+    r"[+*?{]"
+    r"|"
+    r"[+*]\)\{"
+    r")"
+)
 
 
 def _validate_pattern(pattern: str) -> str:
     if len(pattern) > _MAX_PATTERN_LENGTH:
         raise ValueError(
             f"regex pattern too long: {len(pattern)} > {_MAX_PATTERN_LENGTH}"
+        )
+    if _NESTED_QUANTIFIER_RE.search(pattern):
+        raise ValueError(
+            f"potentially unsafe regex pattern (nested quantifiers): {pattern!r}"
         )
     return pattern
 

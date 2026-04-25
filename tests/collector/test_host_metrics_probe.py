@@ -300,7 +300,7 @@ async def test_collect_remote_host_metrics_coerces_strict_host_key_from_string()
     )
 
     assert client.loaded_host_keys is True
-    assert client.host_key_policy_name == "AutoAddPolicy"
+    assert client.host_key_policy_name == "WarningPolicy"
 
 
 def test_assess_host_security_reports_ssh_and_system_issues() -> None:

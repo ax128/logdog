@@ -464,10 +464,15 @@ def _set_host_key_policy(client: Any, *, strict_host_key: bool = True) -> None:
     setter = getattr(client, "set_missing_host_key_policy", None)
     if not callable(setter):
         return
-    policy_name = "RejectPolicy" if strict_host_key else "AutoAddPolicy"
+    policy_name = "RejectPolicy" if strict_host_key else "WarningPolicy"
     policy_factory = getattr(paramiko, policy_name, None)
     if policy_factory is None:
         return
+    if not strict_host_key:
+        logger.warning(
+            "SSH host key checking relaxed — using WarningPolicy; "
+            "set strict_host_key=true for production"
+        )
     setter(policy_factory())
 
 

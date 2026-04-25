@@ -40,6 +40,14 @@ _PENDING_STORM_END_TASKS: dict[tuple[int, str], asyncio.Task[None]] = {}
 _DEFAULT_RECONNECT_BACKOFF_SECONDS = 1.0
 _MAX_RECONNECT_BACKOFF_SECONDS = 10.0
 _DEFAULT_REMOTE_MAX_CONTAINER_STREAMS = 8
+DEFAULT_MAX_LINE_CHARS = 16384
+
+
+def _truncate_line(content: str, max_chars: int) -> str:
+    if len(content) <= max_chars:
+        return content
+    truncated_count = len(content) - max_chars
+    return content[:max_chars] + f" […truncated {truncated_count} chars]"
 
 
 @dataclass(frozen=True, slots=True)
@@ -280,7 +288,8 @@ async def _flush_dedup_summary_after_delay(
         )
     elif window.analysis_mode == "llm":
         _dedup_params = resolve_llm_params(window.llm_model, window.llm_config)
-        analysis = analyze_with_template(
+        analysis = await asyncio.to_thread(
+            analyze_with_template,
             "alert",
             context,
             window.prompt_template,
@@ -292,7 +301,8 @@ async def _flush_dedup_summary_after_delay(
         )
     else:
         _dedup_params = resolve_llm_params(window.llm_model, window.llm_config)
-        analysis = analyze_with_template(
+        analysis = await asyncio.to_thread(
+            analyze_with_template,
             "alert",
             context,
             window.prompt_template,
@@ -572,7 +582,8 @@ async def run_alert_once(
             line=rule.redacted_line,
         )
     elif analysis_mode == "llm":
-        analysis = analyze_with_template(
+        analysis = await asyncio.to_thread(
+            analyze_with_template,
             "alert",
             context,
             prompt_template,
@@ -583,7 +594,8 @@ async def run_alert_once(
             provider_type=_llm_params.provider_type or None,
         )
     else:
-        analysis = analyze_with_template(
+        analysis = await asyncio.to_thread(
+            analyze_with_template,
             "alert",
             context,
             prompt_template,
@@ -857,7 +869,9 @@ class LogStreamWatcher:
                             container_id=container_id,
                             container_name=container_name,
                             timestamp=str(record.get("timestamp") or ""),
-                            content=str(record.get("line") or ""),
+                            content=_truncate_line(
+                        str(record.get("line") or ""), DEFAULT_MAX_LINE_CHARS
+                    ),
                             metadata=dict(record),
                         )
                     )
